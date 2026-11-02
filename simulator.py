@@ -1,0 +1,194 @@
+"""Pure calculations and Excel IO for the period-length decision aid."""
+from io import BytesIO
+from decimal import Decimal, ROUND_CEILING
+import datetime as dt
+import pandas as pd
+
+DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
+LENGTHS = [15, 20, 30, 35]
+SUB = ['Level', 'Subject', 'Minimum weekly requirement', 'Unit', 'Reference period duration in minutes']
+DAY = ['Level', 'Day of week', 'Starting time', 'Desired earliest dismissal time', 'Latest permitted dismissal time']
+ACT = ['Level', 'Day of week', 'Activity', 'Start', 'End']
+
+
+def minute(value):
+    if isinstance(value, (dt.datetime, dt.time, pd.Timestamp)):
+        return value.hour * 60 + value.minute
+    try:
+        parts = str(value).strip().split(':')
+        if len(parts) != 2:
+            raise ValueError()
+        h, m = map(int, parts)
+        if not (0 <= h <= 23 and 0 <= m <= 59):
+            raise ValueError()
+        return h * 60 + m
+    except (TypeError, ValueError):
+        raise ValueError(f'Invalid time {value!r}; use HH:MM (24-hour).')
+
+
+def clock(value):
+    return f'{int(value)//60:02d}:{int(value)%60:02d}'
+
+
+def number(value, label, positive=False):
+    try:
+        x = Decimal(str(value))
+        if not x.is_finite() or x < 0 or (positive and x == 0):
+            raise ValueError()
+        return x
+    except Exception:
+        raise ValueError(f'{label} must be a finite {"positive" if positive else "non-negative"} number.')
+
+
+def validate(subjects, days, activities):
+    for frame, columns, name in [(subjects, SUB, 'Subject Requirements'), (days, DAY, 'School Day Settings'), (activities, ACT, 'Fixed Activities')]:
+        if not set(columns) <= set(frame.columns):
+            raise ValueError(f'{name}: missing columns {set(columns)-set(frame.columns)}')
+        if frame[columns[:2]].isna().any().any():
+            raise ValueError(f'{name}: level and subject/day must be filled.')
+        if any(not str(v).strip() for v in frame[columns[:2]].to_numpy().flatten()):
+            raise ValueError(f'{name}: blank identifiers are not allowed.')
+    if subjects.empty or days.empty:
+        raise ValueError('Subject requirements and school day settings cannot be empty.')
+    if subjects.duplicated(['Level', 'Subject']).any() or days.duplicated(['Level', 'Day of week']).any():
+        raise ValueError('Duplicate subject or day rows are not allowed for a level.')
+    if set(days.Level) != set(subjects.Level):
+        raise ValueError('Levels in subject requirements and school day settings must match.')
+    for level in subjects.Level.unique():
+        if set(days.loc[days.Level == level, 'Day of week']) != set(DAYS):
+            raise ValueError(f'{level}: provide exactly Monday through Friday.')
+    for _, r in subjects.iterrows():
+        number(r[SUB[2]], 'Requirement')
+        if r.Unit not in ['minutes', 'periods']:
+            raise ValueError('Unit must be minutes or periods.')
+        if r.Unit == 'periods':
+            number(r[SUB[4]], 'Reference period duration', True)
+    for _, r in days.iterrows():
+        start, early, late = [minute(r[c]) for c in DAY[2:]]
+        if not start <= early <= late or start == late:
+            raise ValueError('Day times must satisfy start <= earliest <= latest, with start < latest.')
+    for _, r in activities.iterrows():
+        match = days[(days.Level == r.Level) & (days['Day of week'] == r['Day of week'])]
+        if match.empty:
+            raise ValueError('Activity has an unknown level or day.')
+        s, e = minute(r.Start), minute(r.End)
+        d = match.iloc[0]
+        if not minute(d[DAY[2]]) <= s < e <= minute(d[DAY[4]]):
+            raise ValueError('Activities must have positive duration and lie inside the school day.')
+    for _, group in activities.groupby(['Level', 'Day of week']):
+        intervals = sorted((minute(r.Start), minute(r.End)) for _, r in group.iterrows())
+        if any(a[1] > b[0] for a, b in zip(intervals, intervals[1:])):
+            raise ValueError('Fixed activities must not overlap.')
+
+
+def slots_for_day(day, activities, length):
+    number(length, 'Period length', True)
+    cursor, limit = minute(day[DAY[2]]), minute(day[DAY[4]])
+    ends = []
+    for start, end in sorted((minute(r.Start), minute(r.End)) for _, r in activities.iterrows()) + [(limit, limit)]:
+        while cursor + length <= start:
+            cursor += length
+            ends.append(cursor)
+        cursor = end
+    return ends
+
+
+def calculate(subjects, days, activities, overrides=None):
+    validate(subjects, days, activities)
+    overrides = overrides or {}
+    detail, daily, summary, warnings = [], [], [], []
+    for length in LENGTHS:
+        for level in subjects.Level.unique():
+            rows = []
+            for _, r in subjects[subjects.Level == level].iterrows():
+                required = number(r[SUB[2]], 'Requirement')
+                if r.Unit == 'periods':
+                    required *= number(r[SUB[4]], 'Reference duration', True)
+                auto = int((required / Decimal(length)).to_integral_value(rounding=ROUND_CEILING))
+                allocated = number(overrides.get((length, level, r.Subject), auto), 'Allocated periods')
+                if allocated != int(allocated):
+                    raise ValueError('Allocated periods must be whole numbers.')
+                rows.append({'Period length': length, 'Level': level, 'Subject': r.Subject,
+                             'Required minutes': float(required), 'Minimum periods': auto,
+                             'Automatic minutes': auto*length, 'Rounding excess minutes': float(auto*length-required),
+                             'Allocated periods': int(allocated), 'Actual minutes': int(allocated)*length,
+                             'Balance minutes': float(int(allocated)*length-required)})
+            detail.extend(rows)
+            demand = sum(r['Allocated periods'] for r in rows)
+            ds = [days[(days.Level == level) & (days['Day of week'] == d)].iloc[0] for d in DAYS]
+            slots = [slots_for_day(d, activities[(activities.Level == level) & (activities['Day of week'] == d['Day of week'])], length) for d in ds]
+            counts = [0]*5
+            # Water-fill whole period counts, respecting each day's capacity. Ties favor Monday first.
+            for _ in range(min(demand, sum(map(len, slots)))):
+                candidates = [i for i in range(5) if counts[i] < len(slots[i])]
+                i = min(candidates, key=lambda i: (counts[i], i))
+                counts[i] += 1
+            for i, d in enumerate(ds):
+                acts = activities[(activities.Level == level) & (activities['Day of week'] == DAYS[i])]
+                fixed_end = max([minute(x) for x in acts.End] or [minute(d[DAY[2]])])
+                finish = max(slots[i][counts[i]-1] if counts[i] else minute(d[DAY[2]]), fixed_end)
+                status = 'Early' if finish < minute(d[DAY[3]]) else 'Late' if finish > minute(d[DAY[4]]) else 'Within window'
+                daily.append({'Period length': length, 'Level': level, 'Day': DAYS[i], 'Capacity periods': len(slots[i]), 'Assigned periods': counts[i], 'Unused periods': len(slots[i])-counts[i], 'Estimated dismissal': clock(finish), 'Dismissal minute': finish, 'Status': status})
+                if status != 'Within window':
+                    warnings.append({'Period length': length, 'Level': level, 'Warning': f'{DAYS[i]} estimated dismissal {clock(finish)}: {status.lower()}.'})
+            capacity = sum(map(len, slots))
+            summary.append({'Period length': length, 'Level': level, 'Required minutes': sum(r['Required minutes'] for r in rows), 'Minimum periods': sum(r['Minimum periods'] for r in rows), 'Allocated periods': demand, 'Actual minutes': sum(r['Actual minutes'] for r in rows), 'Rounding excess minutes': sum(r['Rounding excess minutes'] for r in rows), 'Balance minutes': sum(r['Balance minutes'] for r in rows), 'Capacity periods': capacity, 'Unused capacity periods': max(0, capacity-demand), 'Insufficient periods': max(0, demand-capacity)})
+            if demand > capacity:
+                warnings.append({'Period length': length, 'Level': level, 'Warning': f'Capacity shortage: {demand-capacity} allocated periods cannot fit. Dismissal estimates include only periods that fit.'})
+            if any(r['Balance minutes'] < 0 for r in rows):
+                warnings.append({'Period length': length, 'Level': level, 'Warning': 'Manual allocations leave one or more subject requirements unmet.'})
+    return {'Comparison': pd.DataFrame(summary), 'Subject Calculations': pd.DataFrame(detail), 'Dismissal Estimates': pd.DataFrame(daily), 'Warnings': pd.DataFrame(warnings, columns=['Period length', 'Level', 'Warning'])}
+
+
+def sample_data():
+    subjects, days, acts = [], [], []
+    for n in range(1, 5):
+        level = f'Sec {n}'
+        for subject, requirement in [('English', 210), ('Mathematics', 210), ('Mother Tongue', 180), ('Science', 180), ('Humanities', 150), ('Physical Education', 90), ('Arts / Electives', 150)]:
+            subjects.append([level, subject, requirement, 'minutes', None])
+        subjects.append([level, 'Character & Citizenship', 2, 'periods', 35])
+        for day in DAYS:
+            days.append([level, day, '07:30' if n < 3 else '07:45', '13:00', '14:30'])
+            acts.extend([[level, day, 'Recess', '10:00', '10:30'], [level, day, 'Lunch', '12:30', '13:00']])
+        acts.append([level, 'Monday', 'Assembly', '08:00', '08:30'])
+    return pd.DataFrame(subjects, columns=SUB), pd.DataFrame(days, columns=DAY), pd.DataFrame(acts, columns=ACT)
+
+
+def workbook(sheets):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        for name, frame in sheets.items():
+            frame.to_excel(writer, sheet_name=name, index=False)
+            ws = writer.sheets[name]
+            ws.freeze_panes = 'A2'
+            ws.auto_filter.ref = ws.dimensions
+            for col in ws.columns:
+                ws.column_dimensions[col[0].column_letter].width = min(60, max(15, max(len(str(c.value or '')) for c in col)+2))
+    return output.getvalue()
+
+
+ASSUMPTIONS = pd.DataFrame({'Assumption': [
+    'All example requirements are synthetic, not official MOE minimums.',
+    'Period-based requirements are converted using the supplied reference duration.',
+    'Whole periods are rounded up separately for each subject before totals.',
+    'Fixed Activities contains one row per activity linked to School Day Settings by level and day.',
+    'Periods pack from each teaching-window start; leftover fragments are unusable.',
+    'Balanced allocation water-fills daily period counts subject to capacity; ties favor Monday.',
+    'All fixed activities are mandatory; dismissal is after the last assigned lesson or fixed activity.',
+    'Earliest dismissal is a preference, not a minimum teaching requirement; no filler periods are added.',
+    'Latest dismissal is a hard capacity limit, so excess demand is unplaced rather than extended late.',
+    'Estimates do not prove a valid subject timetable, nor model teachers, rooms, combinations or optimisation.'
+]})
+
+
+def template():
+    s, d, a = sample_data()
+    return workbook({'Subject Requirements': s, 'School Day Settings': d, 'Fixed Activities': a, 'Read Me': ASSUMPTIONS})
+
+
+def read_inputs(source):
+    sheets = pd.read_excel(source, sheet_name=None)
+    names = ['Subject Requirements', 'School Day Settings', 'Fixed Activities']
+    if not set(names) <= set(sheets):
+        raise ValueError('Workbook must contain: ' + ', '.join(names))
+    return tuple(sheets[n] for n in names)
