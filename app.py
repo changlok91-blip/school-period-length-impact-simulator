@@ -1,5 +1,16 @@
 from hashlib import sha256
 import streamlit as st
+import importlib
+import simulator
+
+# A running Cloud worker can retain the previous helper module after a code update.
+# Refresh it when the new UI needs a function absent from that loaded copy.
+if not all(hasattr(simulator, name) for name in (
+    'sample_data', 'template', 'read_inputs', 'parse_choices',
+    'custom_template', 'curriculum_allocation',
+)):
+    simulator = importlib.reload(simulator)
+
 from simulator import (sample_data, template, read_inputs, parse_choices, custom_template, curriculum_allocation)
 
 st.set_page_config(page_title='School Period Length Impact Simulator', layout='wide')
