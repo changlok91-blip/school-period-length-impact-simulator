@@ -83,3 +83,50 @@ def test_missing_identifiers_not_lost_during_expansion():
         s = data(); s.loc[0, column] = None
         with pytest.raises(ValueError):
             curriculum_allocation(s, 30)
+
+
+def test_configured_arbitrary_streams_receive_common_without_hardcoded_outputs():
+    s = pd.DataFrame([
+        ['Sec 1', 'CMN', 'PE', 90, 'minutes', None, ''],
+        ['Sec 1', 'Alpha', 'Math', 150, 'minutes', None, ''],
+    ], columns=COLS)
+    detail, totals = curriculum_allocation(s, 30, common_streams=['Alpha', 'Beta', 'Gamma'])
+    assert set(totals.Stream) == {'Alpha', 'Beta', 'Gamma'}
+    assert set(detail.loc[detail.Subject == 'PE', 'Stream']) == {'Alpha', 'Beta', 'Gamma'}
+    assert totals.set_index('Stream').loc['Alpha', 'Curriculum minutes'] == 240
+    assert totals.set_index('Stream').loc['Beta', 'Curriculum minutes'] == 90
+
+
+@pytest.mark.parametrize('targets', [[], ['CMN']])
+def test_invalid_common_recipients_rejected(targets):
+    with pytest.raises(ValueError):
+        curriculum_allocation(data(), 30, common_streams=targets)
+
+
+def test_recipient_setting_roundtrip_and_common_only_rows():
+    from io import BytesIO
+    from simulator import custom_template, read_inputs, workbook
+    from openpyxl import load_workbook
+    payload = custom_template(['Sec 1'], ['Alpha', 'Beta', 'CMN'], ['PE'])
+    book = load_workbook(BytesIO(payload))
+    assert list(book['Stream Settings'].values) == [('Stream receiving CMN',), ('Alpha',), ('Beta',)]
+    s, d, a = read_inputs(BytesIO(payload))
+    assert s.attrs['common_streams'] == ['Alpha', 'Beta']
+    s = s[s.Stream == 'CMN'].copy()
+    s['Minimum weekly requirement'] = 90
+    assert set(curriculum_allocation(s, 30)[1].Stream) == {'Alpha', 'Beta'}
+    new_payload = workbook({'Subject Requirements': s, 'School Day Settings': d, 'Fixed Activities': a})
+    loaded, _, _ = read_inputs(BytesIO(new_payload))
+    assert loaded.attrs['common_streams'] == ['Alpha', 'Beta']
+    assert set(curriculum_allocation(loaded, 30)[1].Stream) == {'Alpha', 'Beta'}
+
+
+def test_old_workbook_infers_recipients_from_lists():
+    from io import BytesIO
+    from simulator import custom_template, read_inputs
+    from openpyxl import load_workbook
+    book = load_workbook(BytesIO(custom_template(['Sec 1'], ['Alpha', 'Beta', 'CMN'], ['PE'])))
+    del book['Stream Settings']
+    out = BytesIO(); book.save(out)
+    s, _, _ = read_inputs(BytesIO(out.getvalue()))
+    assert s.attrs['common_streams'] == ['Alpha', 'Beta']

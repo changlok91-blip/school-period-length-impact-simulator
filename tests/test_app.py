@@ -205,3 +205,19 @@ def test_common_inputs_produce_three_real_stream_outputs(monkeypatch):
     totals = totals_table(app).set_index('Stream')
     assert totals.loc['G1', 'Curriculum minutes'] == 270
     assert totals.loc['G2', 'Curriculum minutes'] == 90
+
+
+def test_common_recipients_can_be_renamed_in_app(monkeypatch):
+    import simulator
+    import pandas as pd
+    _, days, acts = simulator.sample_data()
+    subjects = pd.DataFrame([['Sec 1', 'CMN', 'PE', 90, 'minutes', None]], columns=simulator.SUB[:1] + ['Stream'] + simulator.SUB[1:])
+    subjects.attrs['common_streams'] = ['Alpha', 'Beta']
+    monkeypatch.setattr(simulator, 'sample_data', lambda: (subjects, days[days.Level == 'Sec 1'], acts[acts.Level == 'Sec 1']))
+    app = AppTest.from_file(APP).run(timeout=30)
+    assert not app.exception
+    assert set(totals_table(app).Stream) == {'Alpha', 'Beta'}
+    next(widget for widget in app.text_area if widget.label.startswith('Streams receiving CMN')).set_value('X\nY\nZ').run()
+    assert not app.exception
+    assert set(totals_table(app).Stream) == {'X', 'Y', 'Z'}
+    assert set(app.selectbox(key='week_stream').options) == {'X', 'Y', 'Z'}

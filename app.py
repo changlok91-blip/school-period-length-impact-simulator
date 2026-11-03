@@ -9,11 +9,11 @@ import simulator
 # Refresh it when the new UI needs a function absent from that loaded copy.
 if not all(hasattr(simulator, name) for name in (
     'sample_data', 'template', 'read_inputs', 'parse_choices',
-    'custom_template', 'curriculum_allocation', 'estimate_week', 'elective_input_version', 'expand_common_requirements',
+    'custom_template', 'curriculum_allocation', 'estimate_week', 'elective_input_version', 'expand_common_requirements', 'common_targets_for',
 )):
     simulator = importlib.reload(simulator)
 
-from simulator import (sample_data, template, read_inputs, parse_choices, custom_template, curriculum_allocation, estimate_week)
+from simulator import (sample_data, template, read_inputs, parse_choices, custom_template, curriculum_allocation, estimate_week, common_targets_for)
 
 st.set_page_config(page_title='School Period Length Impact Simulator', layout='wide')
 st.title('School Period Length Impact Simulator')
@@ -30,7 +30,7 @@ with st.expander('1. Set up your Excel template', expanded=True):
         subject_choices = st.text_area('Subjects', 'English\nMathematics\nMother Tongue\nScience', key='template_subjects')
     elective_group_choices = st.text_area('Elective groups (optional, one name per line)', '', key='template_elective_groups', help='For example Humanities choice or Arts choice. Assign subjects to these groups in Excel; leave compulsory subjects ungrouped.')
     unit_choices = st.multiselect('Units available in the template', ['minutes', 'periods'], default=['minutes', 'periods'], key='template_units')
-    st.caption('CMN means common to G3, G2 and G1 at the same level. Enter common subjects once under CMN; use stream-specific rows for differences. Delete unused template rows. A specific row for the same subject replaces its CMN row, including its elective group.')
+    st.caption('CMN means common to the actual streams you list above. The workbook saves those recipients on Stream Settings; change them there when using different stream names. Enter common subjects once under CMN; use stream-specific rows for differences. Delete unused template rows. A specific row for the same subject replaces its CMN row, including its elective group.')
     st.caption('Only minutes and periods are supported. The first selected unit is prefilled; change it per row in Excel.')
     try:
         template_bytes = custom_template(parse_choices(level_choices), parse_choices(stream_choices), parse_choices(subject_choices), unit_choices, parse_choices(elective_group_choices))
@@ -59,12 +59,17 @@ with st.expander('Edit inputs', expanded=False):
         st.subheader(name)
         edited.append(st.data_editor(frame, num_rows='dynamic', key=f'input_{name}_{upload.file_id if upload else "sample"}', width='stretch'))
 s, d, a = edited
-st.caption('CMN rows are included in G3, G2 and G1 totals and weekly layouts; CMN is not a separate student stream. A stream-specific row replaces the common row for the same subject. In Subject Requirements, leave Elective group blank for compulsory subjects. Give alternative subjects the same group name. Each student chooses one subject from every group in their level and stream.')
+st.caption('CMN rows are included in the configured recipients’ totals and weekly layouts; CMN is not a separate student stream. A stream-specific row replaces the common row for the same subject. In Subject Requirements, leave Elective group blank for compulsory subjects. Give alternative subjects the same group name. Each student chooses one subject from every group in their level and stream.')
+with st.expander('Common stream settings', expanded=s.Stream.str.upper().eq('CMN').any()):
+    common_text = st.text_area('Streams receiving CMN (one per line)', '\n'.join(common_targets_for(inputs[0])), key=f'common_targets_{upload.file_id if upload else "sample"}')
+    common_streams = parse_choices(common_text)
+    st.caption('List every actual stream that should receive CMN. Do not include CMN itself. These recipients apply at each level containing common requirements; explicit stream-specific rows still override the same common subject.')
+    st.write('CMN recipients: ' + (', '.join(common_streams) if common_streams else 'none — required if using CMN'))
 st.subheader('3. Subject periods and weekly curriculum time')
 length = st.select_slider('Minutes per period', options=[15, 20, 30, 35], value=30, key='period_length')
 st.caption('Minimum periods = required weekly minutes ÷ minutes per period, rounded up separately for each subject. Period-based requirements use the reference duration in your input.')
 try:
-    base, _ = curriculum_allocation(s, length)
+    base, _ = curriculum_allocation(s, length, common_streams=common_streams)
 except (ValueError, TypeError, KeyError) as error:
     st.error(f'Please correct subject requirements: {error}')
     st.stop()
@@ -90,7 +95,7 @@ identities = list(base[['Level', 'Stream', 'Subject']].itertuples(index=False, n
 adjustments = {identity: st.session_state.period_adjustments.get((length, *identity), 0) for identity in identities}
 allocation_error = None
 try:
-    displayed, totals = curriculum_allocation(s, length, adjustments, elective_choices)
+    displayed, totals = curriculum_allocation(s, length, adjustments, elective_choices, common_streams=common_streams)
 except ValueError as error:
     allocation_error = str(error)
     displayed = base.copy()

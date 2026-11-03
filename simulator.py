@@ -165,9 +165,32 @@ def with_stream(subjects):
 COMMON_TARGETS = ['G3', 'G2', 'G1']
 
 
-def expand_common_requirements(subjects):
-    """CMN is inherited by G3/G2/G1 at the same level, with specific overrides."""
+def normalize_common_streams(values):
+    result = []
+    for value in values:
+        if pd.isna(value) or not str(value).strip():
+            continue
+        value = str(value).strip()
+        if value.upper() == 'CMN':
+            raise ValueError('CMN is the common label; list only actual student streams as its recipients.')
+        if value.upper() in COMMON_TARGETS:
+            value = value.upper()
+        if value not in result:
+            result.append(value)
+    return result
+
+
+def common_targets_for(subjects):
+    """Workbook setting when present; preserve legacy G3/G2/G1 behavior otherwise."""
+    return normalize_common_streams(subjects.attrs.get('common_streams', COMMON_TARGETS))
+
+
+def expand_common_requirements(subjects, common_streams=None):
+    """CMN is inherited by configured actual streams at the same level."""
+    targets = common_targets_for(subjects) if common_streams is None else normalize_common_streams(common_streams)
     subjects = with_stream(subjects)
+    if not targets and subjects.Stream.str.upper().eq('CMN').any():
+        raise ValueError('Enter at least one actual stream receiving CMN requirements.')
     for column in ['Level', 'Subject']:
         if column not in subjects:
             raise ValueError(f'Subject Requirements: missing columns {column}')
@@ -182,10 +205,10 @@ def expand_common_requirements(subjects):
     for level, group in subjects.groupby('Level', sort=False):
         common = group[group.Stream == 'CMN']
         specific = group[group.Stream != 'CMN']
-        streams = list(dict.fromkeys((COMMON_TARGETS if not common.empty else []) + list(specific.Stream)))
+        streams = list(dict.fromkeys((targets if not common.empty else []) + list(specific.Stream)))
         for stream in streams:
             own = specific[specific.Stream == stream].copy()
-            inherited = common[~common.Subject.isin(own.Subject)].copy() if stream in COMMON_TARGETS else common.iloc[:0].copy()
+            inherited = common[~common.Subject.isin(own.Subject)].copy() if stream in targets else common.iloc[:0].copy()
             inherited['Stream'] = stream
             inherited['Requirement source'] = 'CMN'
             own['Requirement source'] = stream
@@ -219,7 +242,7 @@ def calculate(subjects, days, activities, overrides=None):
     return {name: pd.concat(frames, ignore_index=True) for name, frames in pieces.items()}
 
 
-def curriculum_allocation(subjects, period_length, adjustments=None, elective_choices=None):
+def curriculum_allocation(subjects, period_length, adjustments=None, elective_choices=None, common_streams=None):
     """Subject minima plus signed deltas; no school-day capacity assumptions.
 
     Adjustments are keyed by (Level, Stream, Subject) for the selected duration.
@@ -229,7 +252,7 @@ def curriculum_allocation(subjects, period_length, adjustments=None, elective_ch
     if duration != int(duration):
         raise ValueError('Minutes per period must be a whole number.')
     duration = int(duration)
-    subjects = expand_common_requirements(subjects)
+    subjects = expand_common_requirements(subjects, common_streams)
     needed = ['Level', 'Stream', 'Subject', SUB[2], 'Unit', SUB[4]]
     if not set(needed) <= set(subjects):
         raise ValueError('Subject Requirements: missing columns ' + ', '.join(c for c in needed if c not in subjects))
@@ -473,6 +496,14 @@ def workbook(sheets):
                 )), dtype='object') for column in CHOICE_COLUMNS + ['Elective group']})
             sheets['Lists'] = current
         sheets['Lists'] = sheets['Lists'].reindex(columns=CHOICE_COLUMNS + ['Elective group'])
+        if 'Stream Settings' not in sheets:
+            if 'common_streams' in subjects.attrs:
+                targets = common_targets_for(subjects)
+            else:
+                targets = normalize_common_streams([v for v in sheets['Lists']['Stream'].dropna() if str(v).strip().upper() != 'CMN'])
+                if not targets and subjects.Stream.str.upper().eq('CMN').any():
+                    targets = COMMON_TARGETS.copy()
+            sheets['Stream Settings'] = pd.DataFrame({'Stream receiving CMN': targets})
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         for name, frame in sheets.items():
@@ -491,7 +522,7 @@ ASSUMPTIONS = pd.DataFrame({'Assumption': [
     'Edit Level, Stream and Subject choices on Lists, one value per cell with no blank gaps. Append within rows 2–1001; dropdowns cover Subject Requirements rows 2–5001.',
     'Unit supports only minutes and periods. Weekly requirements must be numeric and non-negative; reference durations must be positive numbers and are required for periods.',
     'Excel validation may be bypassed by paste; uploaded workbooks are validated again. Older workbooks without Lists remain supported.',
-    'CMN requirements apply to G3, G2 and G1 at the same level. A stream-specific row for the same subject replaces the entire CMN row. CMN is not an output stream.',
+    'CMN requirements apply to the actual streams listed in Stream Settings at the same level; recipients are configurable. A stream-specific row for the same subject replaces the entire CMN row. CMN is not an output stream.',
     'A blank Elective group means compulsory. Choose one subject from each named group independently per level/stream. Curriculum and weekly layout use the selected choices only.',
     'Each level and stream is calculated separately. School day settings and fixed activities are shared by all streams in that level.',
     'Workbooks without Stream are loaded as General; blank stream cells in newer workbooks are invalid.',
@@ -568,4 +599,14 @@ def read_inputs(source):
     if 'Lists' in sheets:
         validate_selections(sheets['Subject Requirements'], sheets['Lists'])
         sheets['Subject Requirements'].attrs['selection_lists'] = sheets['Lists']
+    if 'Stream Settings' in sheets:
+        if 'Stream receiving CMN' not in sheets['Stream Settings']:
+            raise ValueError('Stream Settings needs a Stream receiving CMN column.')
+        targets = normalize_common_streams(sheets['Stream Settings']['Stream receiving CMN'])
+        if not targets and sheets['Subject Requirements'].Stream.str.upper().eq('CMN').any():
+            raise ValueError('Stream Settings: list at least one actual stream receiving CMN.')
+        sheets['Subject Requirements'].attrs['common_streams'] = targets
+    elif 'Lists' in sheets:
+        targets = normalize_common_streams([v for v in sheets['Lists']['Stream'].dropna() if str(v).strip().upper() != 'CMN'])
+        sheets['Subject Requirements'].attrs['common_streams'] = targets or COMMON_TARGETS.copy()
     return tuple(sheets[n] for n in names)
