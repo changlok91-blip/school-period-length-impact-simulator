@@ -90,22 +90,28 @@ Each student takes all compulsory subjects and **one subject from each independe
 
 You can also type group names directly in the app's Subject Requirements editor. When editing Excel, add group names to Lists first and use the dropdown. Old files without Elective group remain entirely compulsory. Each subject can belong to one group at most within a level/stream and appears only once. The model does not support combinations that restrict choices across groups, choosing multiple subjects within a group, elective synchronisation, or class/teacher allocation. A weekly layout for one selected pathway does not represent all students' pathways simultaneously.
 
-## Common requirements: CMN
+## Customise which stream labels are common
 
-The template setup defaults to **G3, G2, G1, CMN**. CMN is a shared input label, not a fourth student curriculum. Enter common subjects once with Stream = CMN. At that level their requirements are inherited independently by the configured recipient streams, even if a target stream has no other subject rows. Common rows are never inherited by other levels. Custom stream names receive CMN when listed as recipients.
+No label has a fixed role in the new configuration. Choose **Student** for an actual student curriculum, and **Common** for a shared requirement label. CMN is just an initial example: you may rename it, classify it as Student, or use several other Common labels.
 
-Example: Sec 1 / CMN / PE / 90 minutes and Sec 1 / G1 / Mathematics / 150 minutes gives G1 both PE and Mathematics; G2 and G3 each inherit PE. If Sec 1 / G2 / PE / 120 minutes is also entered, G2 uses 120 minutes for PE instead of 90; it does not add both. The specific row replaces the whole common subject row, including unit, reference duration and elective group. Subject names must match exactly for an override. Stream codes G3/G2/G1/CMN are case-insensitive.
+Example configuration:
 
-Delete unused placeholder rows in the custom template, including blank specific rows for subjects represented by CMN. All retained rows need complete requirements. The **Requirement source** column in the adjustment table shows whether a subject came from CMN or a specific stream. Period adjustments are made separately for each actual stream; to change a common baseline, edit its CMN input row. CMN does not appear as a separate curriculum total or weekly view.
+| Stream | Type | Applies to |
+|---|---|---|
+| G1 | Student | blank |
+| G2 | Student | blank |
+| G3 | Student | blank |
+| Shared PE | Common | G1, G2, G3 |
+| Shared Arts | Common | G2, G3 |
 
-CMN elective groups are inherited too. Students still choose one option per named group, independently for G3, G2 and G1. A stream-specific subject can replace a common option and its group membership. This does not model mixed-level subject placement or synchronised common classes.
+During template setup, enter all labels in Streams, then use **Classify your stream labels** to select each Type. For each Common label, use its **applies to** multi-selection to choose recipients. Common groups must target actual Student streams, not other Common groups. At least one recipient is required. The downloaded workbook saves this in **Stream Rules**. In Excel, Type has a Student/Common dropdown; enter each recipient on a separate line in its Applies to cell (Alt+Enter in desktop Excel). Student rows must have blank Applies to. Add new labels to both Lists and Stream Rules when editing Excel.
 
-## Use CMN with different stream names
+After uploading, **Stream classifications and common groups** restores this configuration. Edit Stream labels there to add/rename labels; choose Student/Common in the table and recipients beneath it. These controls change the dashboard immediately but do not rewrite the uploaded file. Template-setup controls prepare the download separately and do not change the active dashboard until that workbook is uploaded.
 
-CMN recipients are configurable, rather than fixed to G3/G2/G1. In template setup, enter all actual stream names plus CMN under Streams. The download creates **Stream Settings**, with one actual stream per row under **Stream receiving CMN**; CMN itself is excluded. For example, entering Alpha, Beta, Gamma and CMN creates recipients Alpha, Beta and Gamma. Every level containing a CMN requirement inherits it into each configured recipient, even when that recipient has no specific subject rows.
+A requirement row entered under Shared PE is inherited by its configured Student recipients at that same level, once each. Common labels do not have separate curriculum totals, elective selectors or weekly layouts. A Student stream can receive several independent Common groups. Different recipients can receive different shared requirements, and a recipient with no own subject rows still receives the appropriate common-only curriculum. The Requirement source column shows the originating label.
 
-When uploading, the app restores this setting. Expand **Common stream settings** below Edit inputs to inspect or change **Streams receiving CMN** before calculating. Change this list when changing names in the subject editor; changing only a subject row does not rename its configuration. The displayed CMN recipients list makes the active scope explicit. Do not leave it empty when using common requirements and do not list CMN itself. Specific rows for the same subject still replace the inherited row.
+A Student-specific row for the same subject overrides the entire inherited row (minutes, unit, reference duration and elective group). If two Common groups give the same subject to the same Student stream, the app asks you to remove the overlap or add a Student-specific override instead of silently double counting or choosing one. Subject names must match exactly. Under explicit Stream Rules all labels use exact spelling and case.
 
-The setting applies across all levels containing CMN. If different levels have entirely different stream sets, split the workbooks by context. Adding a recipient with no specific rows still produces its common-only curriculum. Unsupported recipient names are not silently discarded.
+Elective options can be inherited in the same way. After inheritance, students choose one subject per named elective group independently for each actual stream. This does not model mixed-level subject placement, cross-group choice restrictions or synchronised shared classes. Configuration applies across levels; requirements are inherited only within the source row's level. Split workbooks if different contexts need different classifications for the same label.
 
-Older workbooks without Stream Settings infer recipients from the Stream column on Lists, excluding CMN; if no actual streams are available, legacy G3/G2/G1 defaults are used. Direct calculation callers can pass `common_streams=[...]` or set `subjects.attrs['common_streams']`. Files without Lists retain the legacy defaults. Workbook exports preserve an uploaded common-stream configuration.
+Older workbooks using Stream Settings / CMN recipients still load. Their settings are migrated into editable Student/Common classifications in the app. Earlier files without settings use their Lists metadata or the old G3/G2/G1 defaults. Direct calculation callers can pass `stream_rules` as a DataFrame with Stream, Type and Applies to columns, or keep the old `common_streams` parameter for legacy CMN-only behavior. New workbooks use Stream Rules and support any label and multiple common groups.

@@ -9,11 +9,31 @@ import simulator
 # Refresh it when the new UI needs a function absent from that loaded copy.
 if not all(hasattr(simulator, name) for name in (
     'sample_data', 'template', 'read_inputs', 'parse_choices',
-    'custom_template', 'curriculum_allocation', 'estimate_week', 'elective_input_version', 'expand_common_requirements', 'common_targets_for',
+    'custom_template', 'curriculum_allocation', 'estimate_week', 'elective_input_version', 'expand_common_requirements', 'common_targets_for', 'validate_stream_rules', 'stream_rules_for',
 )):
     simulator = importlib.reload(simulator)
 
-from simulator import (sample_data, template, read_inputs, parse_choices, custom_template, curriculum_allocation, estimate_week, common_targets_for)
+from simulator import (sample_data, template, read_inputs, parse_choices, custom_template, curriculum_allocation, estimate_week, common_targets_for, stream_rules_for, validate_stream_rules)
+
+def edit_stream_rules(names, initial, prefix):
+    names = list(dict.fromkeys(str(name).strip() for name in names if str(name).strip()))
+    previous = initial.set_index('Stream').to_dict('index')
+    frame = pd.DataFrame([[name, previous.get(name, {}).get('Type', 'Student')] for name in names], columns=['Stream', 'Type'])
+    signature = sha256(repr(names).encode()).hexdigest()[:12]
+    typed = st.data_editor(frame, disabled=['Stream'], hide_index=True,
+                          column_config={'Type': st.column_config.SelectboxColumn(options=['Student', 'Common'], required=True)},
+                          key=f'{prefix}_types_{signature}', width='stretch')
+    actual = typed.loc[typed.Type == 'Student', 'Stream'].tolist()
+    rows = []
+    for _, row in typed.iterrows():
+        recipients = []
+        if row.Type == 'Common':
+            defaults = [name for name in parse_choices(previous.get(row.Stream, {}).get('Applies to', '')) if name in actual]
+            key = sha256(repr((prefix, row.Stream, actual)).encode()).hexdigest()[:16]
+            recipients = st.multiselect(f'{row.Stream} applies to', actual, default=defaults, key=f'rule_recipients_{key}')
+        rows.append([row.Stream, row.Type, '\n'.join(recipients)])
+    return pd.DataFrame(rows, columns=['Stream', 'Type', 'Applies to'])
+
 
 st.set_page_config(page_title='School Period Length Impact Simulator', layout='wide')
 st.title('School Period Length Impact Simulator')
@@ -30,10 +50,14 @@ with st.expander('1. Set up your Excel template', expanded=True):
         subject_choices = st.text_area('Subjects', 'English\nMathematics\nMother Tongue\nScience', key='template_subjects')
     elective_group_choices = st.text_area('Elective groups (optional, one name per line)', '', key='template_elective_groups', help='For example Humanities choice or Arts choice. Assign subjects to these groups in Excel; leave compulsory subjects ungrouped.')
     unit_choices = st.multiselect('Units available in the template', ['minutes', 'periods'], default=['minutes', 'periods'], key='template_units')
-    st.caption('CMN means common to the actual streams you list above. The workbook saves those recipients on Stream Settings; change them there when using different stream names. Enter common subjects once under CMN; use stream-specific rows for differences. Delete unused template rows. A specific row for the same subject replaces its CMN row, including its elective group.')
+    st.write('Classify your stream labels')
+    st.caption('Student = an actual curriculum. Common = shared requirements for selected Student streams. Any label can be either type, including CMN. Multiple Common labels can target different subsets.')
+    setup_names = parse_choices(stream_choices)
+    setup_seed = pd.DataFrame({'Level': ['Setup'] * len(setup_names), 'Stream': setup_names})
+    setup_rules = edit_stream_rules(setup_names, stream_rules_for(setup_seed), 'template_rules')
     st.caption('Only minutes and periods are supported. The first selected unit is prefilled; change it per row in Excel.')
     try:
-        template_bytes = custom_template(parse_choices(level_choices), parse_choices(stream_choices), parse_choices(subject_choices), unit_choices, parse_choices(elective_group_choices))
+        template_bytes = custom_template(parse_choices(level_choices), parse_choices(stream_choices), parse_choices(subject_choices), unit_choices, parse_choices(elective_group_choices), setup_rules)
     except ValueError as error:
         st.warning(str(error))
         st.download_button('Download my Excel template', b'', 'school_period_input_template.xlsx', disabled=True)
@@ -59,17 +83,22 @@ with st.expander('Edit inputs', expanded=False):
         st.subheader(name)
         edited.append(st.data_editor(frame, num_rows='dynamic', key=f'input_{name}_{upload.file_id if upload else "sample"}', width='stretch'))
 s, d, a = edited
-st.caption('CMN rows are included in the configured recipients’ totals and weekly layouts; CMN is not a separate student stream. A stream-specific row replaces the common row for the same subject. In Subject Requirements, leave Elective group blank for compulsory subjects. Give alternative subjects the same group name. Each student chooses one subject from every group in their level and stream.')
-with st.expander('Common stream settings', expanded=s.Stream.str.upper().eq('CMN').any()):
-    common_text = st.text_area('Streams receiving CMN (one per line)', '\n'.join(common_targets_for(inputs[0])), key=f'common_targets_{upload.file_id if upload else "sample"}')
-    common_streams = parse_choices(common_text)
-    st.caption('List every actual stream that should receive CMN. Do not include CMN itself. These recipients apply at each level containing common requirements; explicit stream-specific rows still override the same common subject.')
-    st.write('CMN recipients: ' + (', '.join(common_streams) if common_streams else 'none — required if using CMN'))
+st.caption('Leave Elective group blank for compulsory subjects. Alternative subjects share a group name, with one selected per group. Shared requirements are controlled by the stream classifications below.')
+with st.expander('Stream classifications and common groups', expanded=True):
+    initial_rules = stream_rules_for(inputs[0], s.Stream.dropna().astype(str).tolist())
+    label_text = st.text_area('Stream labels (one per line)', '\n'.join(initial_rules.Stream), key=f'rule_labels_{upload.file_id if upload else "sample"}')
+    st.caption('Choose Student or Common for every label. For each Common label, select its actual Student recipients. A Student row for a subject overrides an inherited row for the same subject. Common labels are not separate student totals.')
+    active_rules = edit_stream_rules(parse_choices(label_text), initial_rules, f'active_rules_{upload.file_id if upload else "sample"}')
+    try:
+        active_rules = validate_stream_rules(active_rules)
+    except ValueError as error:
+        st.error(str(error))
+        st.stop()
 st.subheader('3. Subject periods and weekly curriculum time')
 length = st.select_slider('Minutes per period', options=[15, 20, 30, 35], value=30, key='period_length')
 st.caption('Minimum periods = required weekly minutes ÷ minutes per period, rounded up separately for each subject. Period-based requirements use the reference duration in your input.')
 try:
-    base, _ = curriculum_allocation(s, length, common_streams=common_streams)
+    base, _ = curriculum_allocation(s, length, stream_rules=active_rules)
 except (ValueError, TypeError, KeyError) as error:
     st.error(f'Please correct subject requirements: {error}')
     st.stop()
@@ -78,7 +107,7 @@ elective_choices = {}
 options_by_group = base[base['Elective group'] != '']
 if not options_by_group.empty:
     st.write('Choose one elective from each group for this example pathway')
-    st.caption('These choices determine the curriculum totals and weekly layout below. The first option is selected initially. CMN elective options are inherited by each stream; choices remain independent per stream. Groups are independent; this does not check subject-combination restrictions.')
+    st.caption('These choices determine the curriculum totals and weekly layout below. The first option is selected initially. Common elective options are inherited by their selected recipients; choices remain independent per stream. Groups are independent; this does not check subject-combination restrictions.')
     for (level, stream, group), options in options_by_group.groupby(['Level', 'Stream', 'Elective group'], sort=False):
         key = 'elective_' + sha256(repr((level, stream, group, list(options.Subject))).encode()).hexdigest()[:20]
         elective_choices[(level, stream, group)] = st.selectbox(f'{level} / {stream} — {group}', list(options.Subject), key=key)
@@ -95,7 +124,7 @@ identities = list(base[['Level', 'Stream', 'Subject']].itertuples(index=False, n
 adjustments = {identity: st.session_state.period_adjustments.get((length, *identity), 0) for identity in identities}
 allocation_error = None
 try:
-    displayed, totals = curriculum_allocation(s, length, adjustments, elective_choices, common_streams=common_streams)
+    displayed, totals = curriculum_allocation(s, length, adjustments, elective_choices, stream_rules=active_rules)
 except ValueError as error:
     allocation_error = str(error)
     displayed = base.copy()

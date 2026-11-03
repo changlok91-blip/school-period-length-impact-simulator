@@ -32,6 +32,7 @@ def test_custom_choices_upload_and_export_preserved():
     # Each list grows independently of the other columns.
     lists.cell(3, 2, 'Custom stream')
     book['Subject Requirements']['B2'] = 'Custom stream'
+    book['Stream Rules'].append(['Custom stream', 'Student', ''])
     out = BytesIO()
     book.save(out)
     inputs = read_inputs(BytesIO(out.getvalue()))

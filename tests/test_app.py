@@ -217,7 +217,38 @@ def test_common_recipients_can_be_renamed_in_app(monkeypatch):
     app = AppTest.from_file(APP).run(timeout=30)
     assert not app.exception
     assert set(totals_table(app).Stream) == {'Alpha', 'Beta'}
-    next(widget for widget in app.text_area if widget.label.startswith('Streams receiving CMN')).set_value('X\nY\nZ').run()
+    next(widget for widget in app.text_area if widget.label.startswith('Stream labels')).set_value('CMN\nX\nY\nZ').run()
+    [widget for widget in app.multiselect if widget.label == 'CMN applies to'][-1].set_value(['X', 'Y', 'Z']).run()
     assert not app.exception
     assert set(totals_table(app).Stream) == {'X', 'Y', 'Z'}
     assert set(app.selectbox(key='week_stream').options) == {'X', 'Y', 'Z'}
+
+
+def test_user_can_change_common_type_and_its_recipients(monkeypatch):
+    import simulator
+    import pandas as pd
+    _, days, acts = simulator.sample_data()
+    subjects = pd.DataFrame([
+        ['Sec 1', 'A', 'Math', 150, 'minutes', None],
+        ['Sec 1', 'B', 'Math', 180, 'minutes', None],
+        ['Sec 1', 'Shared', 'PE', 90, 'minutes', None],
+    ], columns=['Level', 'Stream', 'Subject', 'Minimum weekly requirement', 'Unit', 'Reference period duration in minutes'])
+    subjects.attrs['stream_rules'] = [
+        {'Stream': 'A', 'Type': 'Student', 'Applies to': ''},
+        {'Stream': 'B', 'Type': 'Student', 'Applies to': ''},
+        {'Stream': 'Shared', 'Type': 'Student', 'Applies to': ''}]
+    monkeypatch.setattr(simulator, 'sample_data', lambda: (subjects, days[days.Level == 'Sec 1'], acts[acts.Level == 'Sec 1']))
+    app = AppTest.from_file(APP).run(timeout=30)
+    assert set(totals_table(app).Stream) == {'A', 'B', 'Shared'}
+    editor = [item for item in app.dataframe if list(item.value.columns) == ['Stream', 'Type']][-1]
+    states = app._tree.get_widget_states()
+    states.widgets.append(WidgetState(id=editor.proto.id, string_value=json.dumps({'edited_rows': {'2': {'Type': 'Common'}}, 'added_rows': [], 'deleted_rows': []})))
+    app._run(states)
+    assert not app.exception
+    next(widget for widget in app.multiselect if widget.label == 'Shared applies to').set_value(['A', 'B']).run()
+    assert not app.exception
+    assert set(totals_table(app).Stream) == {'A', 'B'}
+    assert totals_table(app).set_index('Stream').loc['A', 'Curriculum minutes'] == 240
+    next(widget for widget in app.multiselect if widget.label == 'Shared applies to').set_value(['B']).run()
+    assert totals_table(app).set_index('Stream').loc['A', 'Curriculum minutes'] == 150
+    assert totals_table(app).set_index('Stream').loc['B', 'Curriculum minutes'] == 270

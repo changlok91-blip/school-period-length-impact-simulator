@@ -6,6 +6,7 @@ import pandas as pd
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.utils import get_column_letter
+from openpyxl.styles import Alignment
 
 elective_input_version = 1
 
@@ -185,6 +186,82 @@ def common_targets_for(subjects):
     return normalize_common_streams(subjects.attrs.get('common_streams', COMMON_TARGETS))
 
 
+RULE_COLUMNS = ['Stream', 'Type', 'Applies to']
+
+
+def validate_stream_rules(rules):
+    if not set(RULE_COLUMNS) <= set(rules):
+        raise ValueError('Stream Rules needs Stream, Type and Applies to columns.')
+    rules = rules[RULE_COLUMNS].copy().fillna('')
+    for column in RULE_COLUMNS:
+        rules[column] = rules[column].astype(str).str.strip()
+    if rules.empty or rules.Stream.eq('').any() or rules.Stream.duplicated().any():
+        raise ValueError('Stream Rules: enter unique, non-blank stream names.')
+    if not rules.Type.isin(['Student', 'Common']).all():
+        raise ValueError('Stream Rules: Type must be Student or Common.')
+    actual = set(rules.loc[rules.Type == 'Student', 'Stream'])
+    for _, row in rules.iterrows():
+        targets = parse_choices(row['Applies to'])
+        if row.Type == 'Common' and (not targets or not set(targets) <= actual):
+            raise ValueError(f'{row.Stream}: choose at least one recipient classified as Student. Common groups cannot receive other common groups.')
+        if row.Type == 'Student' and targets:
+            raise ValueError(f'{row.Stream}: a Student stream must have blank Applies to.')
+    return rules
+
+
+def stream_rules_for(subjects, names=None):
+    """Restore explicit classifications, or migrate the previous CMN settings."""
+    subjects = with_stream(subjects)
+    names = list(dict.fromkeys(list(subjects.Stream.unique()) + list(names or [])))
+    if 'stream_rules' in subjects.attrs:
+        rules = pd.DataFrame(subjects.attrs['stream_rules'], columns=RULE_COLUMNS)
+        missing = [name for name in names if name not in set(rules.Stream)]
+        if missing:
+            rules = pd.concat([rules, pd.DataFrame([[name, 'Student', ''] for name in missing], columns=RULE_COLUMNS)], ignore_index=True)
+        return rules
+    common = next((name for name in names if name.upper() == 'CMN'), None)
+    targets = common_targets_for(subjects) if common else []
+    names = list(dict.fromkeys(names + targets))
+    return pd.DataFrame([[name, 'Common' if name == common else 'Student', '\n'.join(targets) if name == common else ''] for name in names], columns=RULE_COLUMNS)
+
+
+def expand_stream_rules(subjects, rules):
+    rules = validate_stream_rules(rules)
+    subjects = with_stream(subjects)
+    for column in ['Level', 'Subject']:
+        if column not in subjects:
+            raise ValueError(f'Subject Requirements: missing columns {column}')
+        if subjects[column].isna().any() or any(not str(v).strip() for v in subjects[column]):
+            raise ValueError(f'{column} must be filled for every subject row.')
+    if subjects.duplicated(['Level', 'Stream', 'Subject']).any():
+        raise ValueError('Duplicate subject rows are not allowed within the same level and stream.')
+    missing = set(subjects.Stream) - set(rules.Stream)
+    if missing:
+        raise ValueError('Classify these streams in Stream Rules: ' + ', '.join(sorted(missing)))
+    if subjects.empty:
+        return subjects
+    common_map = {r.Stream: parse_choices(r['Applies to']) for _, r in rules[rules.Type == 'Common'].iterrows()}
+    pieces = []
+    for level, group in subjects.groupby('Level', sort=False):
+        common_rows = group[group.Stream.isin(common_map)]
+        own_rows = group[~group.Stream.isin(common_map)]
+        targets = list(dict.fromkeys(list(own_rows.Stream) + [target for label in common_rows.Stream.unique() for target in common_map[label]]))
+        for target in targets:
+            own = own_rows[own_rows.Stream == target].copy()
+            inherited = common_rows[common_rows.Stream.map(lambda label: target in common_map[label]) & ~common_rows.Subject.isin(own.Subject)].copy()
+            if inherited.Subject.duplicated().any():
+                duplicates = ', '.join(inherited.loc[inherited.Subject.duplicated(), 'Subject'].astype(str))
+                raise ValueError(f'{level} / {target}: overlapping common groups define {duplicates}. Remove the overlap or enter a specific Student row to override it.')
+            inherited['Requirement source'] = inherited.Stream
+            inherited['Stream'] = target
+            own['Requirement source'] = target
+            inherited.attrs = {}; own.attrs = {}
+            pieces.extend([own, inherited])
+    result = pd.concat(pieces, ignore_index=True)
+    result.attrs = subjects.attrs.copy()
+    return result
+
+
 def expand_common_requirements(subjects, common_streams=None):
     """CMN is inherited by configured actual streams at the same level."""
     targets = common_targets_for(subjects) if common_streams is None else normalize_common_streams(common_streams)
@@ -242,7 +319,7 @@ def calculate(subjects, days, activities, overrides=None):
     return {name: pd.concat(frames, ignore_index=True) for name, frames in pieces.items()}
 
 
-def curriculum_allocation(subjects, period_length, adjustments=None, elective_choices=None, common_streams=None):
+def curriculum_allocation(subjects, period_length, adjustments=None, elective_choices=None, common_streams=None, stream_rules=None):
     """Subject minima plus signed deltas; no school-day capacity assumptions.
 
     Adjustments are keyed by (Level, Stream, Subject) for the selected duration.
@@ -252,7 +329,10 @@ def curriculum_allocation(subjects, period_length, adjustments=None, elective_ch
     if duration != int(duration):
         raise ValueError('Minutes per period must be a whole number.')
     duration = int(duration)
-    subjects = expand_common_requirements(subjects, common_streams)
+    if stream_rules is not None or 'stream_rules' in subjects.attrs:
+        subjects = expand_stream_rules(subjects, stream_rules if stream_rules is not None else stream_rules_for(subjects))
+    else:
+        subjects = expand_common_requirements(subjects, common_streams)
     needed = ['Level', 'Stream', 'Subject', SUB[2], 'Unit', SUB[4]]
     if not set(needed) <= set(subjects):
         raise ValueError('Subject Requirements: missing columns ' + ', '.join(c for c in needed if c not in subjects))
@@ -496,14 +576,12 @@ def workbook(sheets):
                 )), dtype='object') for column in CHOICE_COLUMNS + ['Elective group']})
             sheets['Lists'] = current
         sheets['Lists'] = sheets['Lists'].reindex(columns=CHOICE_COLUMNS + ['Elective group'])
-        if 'Stream Settings' not in sheets:
-            if 'common_streams' in subjects.attrs:
-                targets = common_targets_for(subjects)
-            else:
-                targets = normalize_common_streams([v for v in sheets['Lists']['Stream'].dropna() if str(v).strip().upper() != 'CMN'])
-                if not targets and subjects.Stream.str.upper().eq('CMN').any():
-                    targets = COMMON_TARGETS.copy()
-            sheets['Stream Settings'] = pd.DataFrame({'Stream receiving CMN': targets})
+        if 'Stream Rules' not in sheets:
+            seed = subjects.copy()
+            if 'stream_rules' not in subjects.attrs and 'common_streams' not in subjects.attrs:
+                seed.attrs['common_streams'] = normalize_common_streams([v for v in sheets['Lists']['Stream'].dropna() if str(v).upper() != 'CMN']) or COMMON_TARGETS.copy()
+            sheets['Stream Rules'] = stream_rules_for(seed, sheets['Lists']['Stream'].dropna().tolist())
+        sheets['Stream Rules'] = validate_stream_rules(sheets['Stream Rules'])
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         for name, frame in sheets.items():
@@ -515,6 +593,16 @@ def workbook(sheets):
                 ws.column_dimensions[col[0].column_letter].width = min(60, max(15, max(len(str(c.value or '')) for c in col)+2))
         if 'Subject Requirements' in sheets:
             add_excel_validation(writer.book)
+        if 'Stream Rules' in sheets:
+            rule = DataValidation(type='list', formula1='"Student,Common"', allow_blank=False)
+            rule.showErrorMessage = True
+            rule.errorStyle = 'stop'
+            writer.book['Stream Rules'].add_data_validation(rule)
+            rule.add('B2:B1001')
+            writer.book['Stream Rules'].column_dimensions['C'].width = 40
+            for row in writer.book['Stream Rules'].iter_rows(min_row=2):
+                row[2].alignment = Alignment(wrap_text=True, vertical='top')
+                writer.book['Stream Rules'].row_dimensions[row[0].row].height = 15 * max(1, len(str(row[2].value or '').splitlines()))
     return output.getvalue()
 
 
@@ -522,7 +610,7 @@ ASSUMPTIONS = pd.DataFrame({'Assumption': [
     'Edit Level, Stream and Subject choices on Lists, one value per cell with no blank gaps. Append within rows 2–1001; dropdowns cover Subject Requirements rows 2–5001.',
     'Unit supports only minutes and periods. Weekly requirements must be numeric and non-negative; reference durations must be positive numbers and are required for periods.',
     'Excel validation may be bypassed by paste; uploaded workbooks are validated again. Older workbooks without Lists remain supported.',
-    'CMN requirements apply to the actual streams listed in Stream Settings at the same level; recipients are configurable. A stream-specific row for the same subject replaces the entire CMN row. CMN is not an output stream.',
+    'Stream Rules classifies each label as Student or Common. A Common label applies only to its listed Student recipients at the same level. A Student-specific row overrides the same inherited subject. Common labels have no separate output totals.',
     'A blank Elective group means compulsory. Choose one subject from each named group independently per level/stream. Curriculum and weekly layout use the selected choices only.',
     'Each level and stream is calculated separately. School day settings and fixed activities are shared by all streams in that level.',
     'Workbooks without Stream are loaded as General; blank stream cells in newer workbooks are invalid.',
@@ -549,7 +637,7 @@ def parse_choices(value):
     return list(dict.fromkeys(line.strip() for line in value.splitlines() if line.strip()))
 
 
-def custom_template(levels, streams, subjects, units=None, elective_groups=None):
+def custom_template(levels, streams, subjects, units=None, elective_groups=None, stream_rules=None):
     """Create a blank requirement workbook from user-defined choices."""
     units = ['minutes', 'periods'] if units is None else units
     choices = {}
@@ -586,6 +674,8 @@ def custom_template(levels, streams, subjects, units=None, elective_groups=None)
         'One row is created for every level/stream/subject combination. Delete rows that do not apply. Leave Elective group blank for compulsory; give alternative subjects the same group name.',
         'School day settings and activities are illustrative defaults. Replace them with your own school settings.'
     ]}), ASSUMPTIONS], ignore_index=True)
+    if stream_rules is not None:
+        requirements.attrs['stream_rules'] = validate_stream_rules(stream_rules).to_dict('records')
     return workbook({'Subject Requirements': requirements, 'School Day Settings': pd.concat(day_parts, ignore_index=True),
                      'Fixed Activities': pd.concat(activity_parts, ignore_index=True), 'Lists': lists, 'Read Me': notes})
 
@@ -599,7 +689,13 @@ def read_inputs(source):
     if 'Lists' in sheets:
         validate_selections(sheets['Subject Requirements'], sheets['Lists'])
         sheets['Subject Requirements'].attrs['selection_lists'] = sheets['Lists']
-    if 'Stream Settings' in sheets:
+    if 'Stream Rules' in sheets:
+        rules = validate_stream_rules(sheets['Stream Rules'])
+        missing = set(sheets['Subject Requirements'].Stream) - set(rules.Stream)
+        if missing:
+            raise ValueError('Classify these streams in Stream Rules: ' + ', '.join(sorted(missing)))
+        sheets['Subject Requirements'].attrs['stream_rules'] = rules.to_dict('records')
+    elif 'Stream Settings' in sheets:
         if 'Stream receiving CMN' not in sheets['Stream Settings']:
             raise ValueError('Stream Settings needs a Stream receiving CMN column.')
         targets = normalize_common_streams(sheets['Stream Settings']['Stream receiving CMN'])
