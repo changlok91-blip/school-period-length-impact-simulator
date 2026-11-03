@@ -8,11 +8,11 @@ from simulator import (template, read_inputs, workbook, selection_lists, calcula
 
 def test_template_validation_rules_and_dynamic_names():
     book = load_workbook(BytesIO(template()))
-    assert list(book['Lists'].values)[0] == tuple(CHOICE_COLUMNS)
+    assert list(book['Lists'].values)[0] == tuple(CHOICE_COLUMNS + ['Elective group'])
     ws = book['Subject Requirements']
     assert [c.value for c in ws[1]][:3] == ['Level', 'Stream', 'Subject']
     rules = list(ws.data_validations.dataValidation)
-    assert len(rules) == 6
+    assert len(rules) == 7
     for col, letter in [('Level', 'A'), ('Stream', 'B'), ('Subject', 'C'), ('Unit', 'E')]:
         rule = next(r for r in rules if r.formula1 == f'=Choices_{col}')
         assert rule.type == 'list' and rule.showDropDown is False
@@ -40,7 +40,7 @@ def test_custom_choices_upload_and_export_preserved():
     data = workbook(dict(zip(['Subject Requirements', 'School Day Settings', 'Fixed Activities'], inputs)))
     result = load_workbook(BytesIO(data))
     assert result['Lists']['B3'].value == 'Custom stream'
-    assert len(result['Subject Requirements'].data_validations.dataValidation) == 6
+    assert len(result['Subject Requirements'].data_validations.dataValidation) == 7
 
 
 def test_pasted_unknown_choice_is_rejected():
@@ -89,7 +89,7 @@ def test_personalized_template_contains_choices_and_no_invented_requirements():
     result = calculate(s, d, a)
     assert len(result['Comparison']) == 16
     assert set(result['Subject Calculations']['Required minutes']) == {150}
-    assert len(book['Subject Requirements'].data_validations.dataValidation) == 6
+    assert len(book['Subject Requirements'].data_validations.dataValidation) == 7
 
 
 @pytest.mark.parametrize('levels,streams,subjects,units', [([], ['G1'], ['Math'], None), (['Sec 1'], [], ['Math'], None), (['Sec 1'], ['G1'], [], None), (['Sec 1'], ['G1'], ['Math'], []), (['Sec 1'], ['G1'], ['Math'], ['hours']), ([str(i) for i in range(10)], [str(i) for i in range(10)], [str(i) for i in range(51)], None)])

@@ -34,11 +34,11 @@ Setting up a template does not change the active dashboard until you upload the 
 
 ## Subject requirements and dropdowns
 
-Subject Requirements columns are **Level → Stream → Subject → Minimum weekly requirement → Unit → Reference period duration in minutes**. A subject may appear once in each level/stream combination. Different streams can have different subjects and different requirements. Blank identifiers and duplicate rows within the same combination are rejected.
+Subject Requirements columns are **Level → Stream → Subject → Minimum weekly requirement → Unit → Reference period duration in minutes → Elective group**. A subject may appear once in each level/stream combination. Different streams can have different subjects and different requirements. Blank identifiers and duplicate rows within the same combination are rejected.
 
 Minimum weekly requirement must be a finite number >= 0. Unit must be `minutes` or `periods`. For period-based requirements a positive reference duration is required: for example 5 periods at 30 minutes means 150 required teaching minutes. For minute-based requirements the reference may be blank; if supplied it must be a positive number and is ignored in the conversion. Fractional requirements are accepted; allocations are whole periods.
 
-The **Lists** sheet holds independent Level, Stream, Subject and Unit choices, one per cell. Rename or append entries without blank gaps within rows 2–1001. These four columns do not define combinations by row. Unit choices must remain `minutes` and/or `periods`. Dropdowns and numeric validation cover Subject Requirements rows 2–5001. Keep sheet names and column headings unchanged.
+The **Lists** sheet holds independent Level, Stream, Subject, Unit and Elective group choices, one per cell. Rename or append entries without blank gaps within rows 2–1001. These list columns do not define combinations by row. Unit choices must remain `minutes` and/or `periods`. Dropdowns and numeric validation cover Subject Requirements rows 2–5001. Keep sheet names and column headings unchanged.
 
 Excel paste operations can bypass validation. The app checks list membership on upload and validates subject calculations again. Older workbooks without Stream load as `General`; older workbooks without Lists also remain supported. Dynamic dropdown compatibility may differ in spreadsheet software other than Microsoft Excel.
 
@@ -48,7 +48,7 @@ Excel paste operations can bypass validation. The app checks list membership on 
 2. In the subject table, read **Minimum periods**: `ceiling(required minutes / selected period length)`. Each subject is rounded separately before totals.
 3. Edit **Adjustment (periods)**: enter `1` or `2` to add periods, `-1` or `-2` to subtract, or `0` to use the minimum. Any signed whole number is allowed if the final allocation remains non-negative.
 4. The same table updates **Allocated periods**, **Actual minutes**, **Balance minutes** and **Requirement status**. A negative balance is a shortfall; zero or positive meets the requirement. Subject surpluses never satisfy another subject's shortfall.
-5. Read **Weekly curriculum hours by level and stream**. It totals allocated periods × selected minutes separately for each combination. **Curriculum hours** is decimal hours displayed to two decimals; **Curriculum minutes** and **Curriculum time** give exact minutes and hours/minutes. Totals include both rounding and adjustments. **Subjects below minimum** keeps shortfalls visible even if overall minutes are sufficient.
+5. Read **Weekly curriculum hours by level and stream**. It totals allocated periods × selected minutes for compulsory subjects and one selected elective per group, separately for each level/stream. **Curriculum hours** is decimal hours displayed to two decimals; **Curriculum minutes** and **Curriculum time** give exact minutes and hours/minutes. Totals include both rounding and adjustments. **Subjects below minimum** keeps shortfalls visible even if overall minutes are sufficient.
 
 Example: a 150-minute requirement at 20 minutes needs 8 periods and provides 160 minutes. An adjustment of +2 gives 10 periods/200 minutes. An adjustment of -1 gives 7 periods/140 minutes and flags a 10-minute shortfall.
 
@@ -70,10 +70,22 @@ These are weekly allocated curriculum hours, not a timetable feasibility check. 
 
 After the hours table, see Monday–Friday estimated dismissal times for every level/stream. Choose a level and stream to view a colour-coded timeline: teaching periods, fixed activities, and unallocated school time. Exact block start/end times and daily counts are available below the chart.
 
-The layout uses the current slider and adjusted allocations. School Day Settings and Fixed Activities apply to all streams in that level. Earliest dismissal is now a **mandatory floor**, not a preference, in this output. Latest dismissal is a hard upper limit. Periods pack from the start of uninterrupted teaching windows; no period crosses a fixed activity, and leftover fragments cannot be joined across breaks. All fixed activities remain mandatory, including those after the last teaching period.
+The layout uses the current slider, adjusted allocations, compulsory subjects and the selected elective from each group. Different elective choices can yield different dismissal times. School Day Settings and Fixed Activities apply to all streams in that level. Earliest dismissal is now a **mandatory floor**, not a preference, in this output. Latest dismissal is a hard upper limit. Periods pack from the start of uninterrupted teaching windows; no period crosses a fixed activity, and leftover fragments cannot be joined across breaks. All fixed activities remain mandatory, including those after the last teaching period.
 
 To balance clock times, the estimator finds the earliest common clock-time horizon that offers enough slots across all five days, clamped to each day's mandatory floor and latest limit. It then repeatedly assigns the next period to the day with the earliest resulting dismissal, breaking ties by period count and weekday. This is a heuristic; it does not guarantee the smallest possible dismissal spread. Different start times and daily limits may yield different dismissal times.
 
 If lessons end before the earliest dismissal (or before a later fixed activity), the gap is labelled **unallocated school time**. This is not counted as teaching or curriculum hours; the school must decide activities/supervision for it. A late mandatory activity can also determine dismissal. Insufficient weekly capacity is flagged as unplaced periods: the layout contains only periods that fit and does not imply the whole curriculum has been placed.
 
 Teaching blocks are generic numbered periods. No subjects, teachers or rooms are assigned, and the layout is not a valid subject timetable. Adjusting periods changes both curriculum hours and this layout immediately. Invalid day settings hide only the layout, preserving the curriculum table above.
+
+## Compulsory subjects and elective groups
+
+Each student takes all compulsory subjects and **one subject from each independent elective group** in their level/stream. Group names are configurable: for example Humanities choice and Arts choice. The same group name may be reused across levels/streams; its options and selections are independent for each combination.
+
+1. Before downloading, optionally enter your group names under **Elective groups**. The downloaded Lists sheet includes these choices.
+2. On Subject Requirements, leave **Elective group** blank for compulsory subjects. Give alternative subjects the same group name. Example: English blank, Mathematics blank, History and Geography both Humanities choice, Art/Music/Drama all Arts choice.
+3. Upload the completed file. The app shows one selector per level/stream/group; the first option is selected initially. Select the electives for the example student pathway you want to inspect.
+4. The adjustment table shows all options, with **Selected** marking the rows counted. Curriculum totals and weekly layouts count only compulsory subjects and the selected options, never all alternatives together. Subject warnings and below-minimum counts refer to this selected pathway.
+5. **Minimum pathway hours** and **Maximum pathway hours** show the range across all independent choices, after per-subject rounding and manual adjustments. Curriculum hours/time are for the specific selected pathway. Change a selector to explore another pathway's weekly layout and dismissal.
+
+You can also type group names directly in the app's Subject Requirements editor. When editing Excel, add group names to Lists first and use the dropdown. Old files without Elective group remain entirely compulsory. Each subject can belong to one group at most within a level/stream and appears only once. The model does not support combinations that restrict choices across groups, choosing multiple subjects within a group, elective synchronisation, or class/teacher allocation. A weekly layout for one selected pathway does not represent all students' pathways simultaneously.

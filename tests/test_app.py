@@ -154,3 +154,32 @@ def test_weekly_layout_follows_adjustments_and_stream_selection():
     assert set(daily.Level) == {'Sec 3'}
     assert (daily['Estimated dismissal'] >= daily['Earliest dismissal']).all()
     assert (daily['Estimated dismissal'] <= daily['Latest dismissal']).all()
+
+
+def test_elective_choice_changes_hours_and_week_without_double_counting(monkeypatch):
+    import simulator
+    import pandas as pd
+    subjects, days, activities = simulator.sample_data()
+    subjects = subjects[(subjects.Level == 'Sec 1') & subjects.Subject.isin(['English', 'Mathematics', 'Science'])].copy()
+    subjects['Elective group'] = ['', 'Choice A', 'Choice A']
+    monkeypatch.setattr(simulator, 'sample_data', lambda: (subjects, days[days.Level == 'Sec 1'], activities[activities.Level == 'Sec 1']))
+    app = AppTest.from_file(APP).run(timeout=30)
+    assert not app.exception
+    electives = next(widget for widget in app.selectbox if 'Choice A' in widget.label)
+    assert electives.value == 'Mathematics'
+    assert totals_table(app).iloc[0]['Allocated periods'] == 14
+    electives.select('Science').run()
+    assert not app.exception
+    assert totals_table(app).iloc[0]['Allocated periods'] == 13
+    summary = next(item.value for item in app.dataframe if 'Placed periods' in item.value)
+    assert summary.iloc[0]['Allocated periods'] == 13
+    selected = subject_table(app)
+    assert set(selected.loc[selected.Selected, 'Subject']) == {'English', 'Science'}
+
+
+def test_startup_refreshes_pre_elective_helper(monkeypatch):
+    import simulator
+    monkeypatch.delattr(simulator, 'elective_input_version')
+    app = AppTest.from_file(APP).run(timeout=30)
+    assert not app.exception
+    assert hasattr(simulator, 'elective_input_version')

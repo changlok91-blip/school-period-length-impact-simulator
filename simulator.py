@@ -7,6 +7,8 @@ from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.utils import get_column_letter
 
+elective_input_version = 1
+
 DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
 LENGTHS = [15, 20, 30, 35]
 SUB = ['Level', 'Subject', 'Minimum weekly requirement', 'Unit', 'Reference period duration in minutes']
@@ -152,6 +154,9 @@ def with_stream(subjects):
     if subjects['Stream'].isna().any() or any(not str(v).strip() for v in subjects['Stream']):
         raise ValueError('Stream must be filled for every subject row.')
     subjects['Stream'] = subjects['Stream'].astype(str).str.strip()
+    if 'Elective group' not in subjects:
+        subjects['Elective group'] = ''
+    subjects['Elective group'] = subjects['Elective group'].fillna('').astype(str).str.strip()
     columns = [column for column in subjects.columns if column != 'Stream']
     columns.insert(columns.index('Level') + 1 if 'Level' in columns else 0, 'Stream')
     return subjects.loc[:, columns]
@@ -180,11 +185,11 @@ def calculate(subjects, days, activities, overrides=None):
     return {name: pd.concat(frames, ignore_index=True) for name, frames in pieces.items()}
 
 
-def curriculum_allocation(subjects, period_length, adjustments=None):
+def curriculum_allocation(subjects, period_length, adjustments=None, elective_choices=None):
     """Subject minima plus signed deltas; no school-day capacity assumptions.
 
     Adjustments are keyed by (Level, Stream, Subject) for the selected duration.
-    Returns subject detail and independent weekly totals for each level/stream.
+    Returns all option rows and totals for compulsory subjects plus one choice per group.
     """
     duration = number(period_length, 'Minutes per period', True)
     if duration != int(duration):
@@ -227,10 +232,23 @@ def curriculum_allocation(subjects, period_length, adjustments=None):
                      'Required minutes': float(required), 'Minimum periods': minimum,
                      'Adjustment (periods)': adjustment, 'Allocated periods': allocated,
                      'Actual minutes': actual, 'Balance minutes': float(Decimal(actual) - required),
-                     'Requirement status': 'Shortfall' if Decimal(actual) < required else 'Met'})
+                     'Requirement status': 'Shortfall' if Decimal(actual) < required else 'Met',
+                     'Elective group': r['Elective group']})
     detail = pd.DataFrame(rows)
+    detail['Selected'] = detail['Elective group'] == ''
+    for (level, stream, name), options in detail[detail['Elective group'] != ''].groupby(['Level', 'Stream', 'Elective group'], sort=False):
+        chosen = (elective_choices or {}).get((level, stream, name), options.iloc[0].Subject)
+        if chosen not in set(options.Subject):
+            raise ValueError(f'{level} / {stream} / {name}: choose one of its listed subjects.')
+        detail.loc[options.index, 'Selected'] = options.Subject == chosen
     totals = []
-    for (level, stream), group in detail.groupby(['Level', 'Stream'], sort=False):
+    for (level, stream), all_options in detail.groupby(['Level', 'Stream'], sort=False):
+        group = all_options[all_options.Selected]
+        compulsory_minutes = int(all_options.loc[all_options['Elective group'] == '', 'Actual minutes'].sum())
+        minimum_minutes = maximum_minutes = compulsory_minutes
+        for _, options in all_options[all_options['Elective group'] != ''].groupby('Elective group'):
+            minimum_minutes += int(options['Actual minutes'].min())
+            maximum_minutes += int(options['Actual minutes'].max())
         minutes = int(group['Actual minutes'].sum())
         totals.append({'Level': level, 'Stream': stream,
                        'Required minutes': group['Required minutes'].sum(),
@@ -239,7 +257,8 @@ def curriculum_allocation(subjects, period_length, adjustments=None):
                        'Allocated periods': int(group['Allocated periods'].sum()),
                        'Curriculum minutes': minutes, 'Curriculum hours': minutes / 60,
                        'Curriculum time': f'{minutes // 60}h {minutes % 60:02d}m',
-                       'Subjects below minimum': int((group['Requirement status'] == 'Shortfall').sum())})
+                       'Subjects below minimum': int((group['Requirement status'] == 'Shortfall').sum()),
+                       'Minimum pathway hours': minimum_minutes / 60, 'Maximum pathway hours': maximum_minutes / 60})
     return detail, pd.DataFrame(totals)
 
 
@@ -254,6 +273,8 @@ def estimate_week(allocations, days, activities, period_length):
     if duration != int(duration):
         raise ValueError('Minutes per period must be a whole number.')
     duration = int(duration)
+    if 'Selected' in allocations:
+        allocations = allocations[allocations.Selected].copy()
     levels = allocations.Level.unique()
     dummy = pd.DataFrame([[level, 'Schedule', 0, 'minutes', None] for level in levels], columns=SUB)
     validate(dummy, days, activities)
@@ -339,6 +360,7 @@ def selection_lists(subjects):
         if column == 'Unit':
             values = ['minutes', 'periods']
         choices[column] = pd.Series(values, dtype='object')
+    choices['Elective group'] = pd.Series(list(dict.fromkeys(subjects.loc[subjects['Elective group'] != '', 'Elective group'])), dtype='object')
     return pd.DataFrame(choices)
 
 
@@ -355,6 +377,12 @@ def validate_selections(subjects, lists):
         invalid = set(subjects[column].dropna().astype(str).str.strip()) - allowed
         if invalid:
             raise ValueError(f'Subject Requirements: {column} values are missing from Lists: {sorted(invalid)}')
+
+    if 'Elective group' in lists:
+        allowed = set(lists['Elective group'].dropna().astype(str).str.strip())
+        used = set(with_stream(subjects)['Elective group']) - {''}
+        if used - allowed:
+            raise ValueError('Elective group values are missing from Lists: ' + ', '.join(sorted(used - allowed)))
 
 
 def add_excel_validation(book):
@@ -376,6 +404,15 @@ def add_excel_validation(book):
         rule.errorStyle = 'stop'
         ws.add_data_validation(rule)
         rule.add(f'{positions[column]}2:{positions[column]}{INPUT_LIMIT+1}')
+    if 'Elective group' in positions:
+        book.defined_names.add(DefinedName('Choices_ElectiveGroup', attr_text=f"'Lists'!$E$2:INDEX('Lists'!$E$2:$E${LIST_LIMIT+1},MAX(1,COUNTA('Lists'!$E$2:$E${LIST_LIMIT+1})))"))
+        rule = DataValidation(type='list', formula1='=Choices_ElectiveGroup', allow_blank=True)
+        rule.showDropDown = False
+        rule.showErrorMessage = True
+        rule.errorStyle = 'stop'
+        rule.error = 'Choose a named elective group, or leave blank for compulsory.'
+        ws.add_data_validation(rule)
+        rule.add(f"{positions['Elective group']}2:{positions['Elective group']}{INPUT_LIMIT+1}")
     for column, operator, blank in [('Minimum weekly requirement', 'greaterThanOrEqual', False), ('Reference period duration in minutes', 'greaterThan', True)]:
         rule = DataValidation(type='decimal', operator=operator, formula1='0', allow_blank=blank)
         rule.showErrorMessage = rule.showInputMessage = True
@@ -398,9 +435,10 @@ def workbook(sheets):
             current = selection_lists(subjects)
             if existing is not None:
                 current = pd.DataFrame({column: pd.Series(list(dict.fromkeys(
-                    existing[column].dropna().astype(str).str.strip().tolist() + current[column].dropna().tolist()
-                )), dtype='object') for column in CHOICE_COLUMNS})
+                    existing.get(column, pd.Series(dtype='object')).dropna().astype(str).str.strip().tolist() + current[column].dropna().tolist()
+                )), dtype='object') for column in CHOICE_COLUMNS + ['Elective group']})
             sheets['Lists'] = current
+        sheets['Lists'] = sheets['Lists'].reindex(columns=CHOICE_COLUMNS + ['Elective group'])
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         for name, frame in sheets.items():
@@ -419,6 +457,7 @@ ASSUMPTIONS = pd.DataFrame({'Assumption': [
     'Edit Level, Stream and Subject choices on Lists, one value per cell with no blank gaps. Append within rows 2–1001; dropdowns cover Subject Requirements rows 2–5001.',
     'Unit supports only minutes and periods. Weekly requirements must be numeric and non-negative; reference durations must be positive numbers and are required for periods.',
     'Excel validation may be bypassed by paste; uploaded workbooks are validated again. Older workbooks without Lists remain supported.',
+    'A blank Elective group means compulsory. Choose one subject from each named group independently per level/stream. Curriculum and weekly layout use the selected choices only.',
     'Each level and stream is calculated separately. School day settings and fixed activities are shared by all streams in that level.',
     'Workbooks without Stream are loaded as General; blank stream cells in newer workbooks are invalid.',
     'All example requirements are synthetic, not official MOE minimums.',
@@ -444,7 +483,7 @@ def parse_choices(value):
     return list(dict.fromkeys(line.strip() for line in value.splitlines() if line.strip()))
 
 
-def custom_template(levels, streams, subjects, units=None):
+def custom_template(levels, streams, subjects, units=None, elective_groups=None):
     """Create a blank requirement workbook from user-defined choices."""
     units = ['minutes', 'periods'] if units is None else units
     choices = {}
@@ -472,9 +511,13 @@ def custom_template(levels, streams, subjects, units=None):
         day_parts.append(days)
         activity_parts.append(activities)
     lists = pd.DataFrame({label: pd.Series(values, dtype='object') for label, values in choices.items()})
+    groups = list(dict.fromkeys(str(v).strip() for v in (elective_groups or []) if str(v).strip()))
+    if len(groups) > LIST_LIMIT:
+        raise ValueError(f'Enter at most {LIST_LIMIT} elective groups.')
+    lists['Elective group'] = pd.Series(groups, dtype='object')
     notes = pd.concat([pd.DataFrame({'Assumption': [
         'Custom template: enter every weekly requirement before upload. Blank requirements are incomplete, not zero.',
-        'One row is created for every level/stream/subject combination. Delete rows that do not apply.',
+        'One row is created for every level/stream/subject combination. Delete rows that do not apply. Leave Elective group blank for compulsory; give alternative subjects the same group name.',
         'School day settings and activities are illustrative defaults. Replace them with your own school settings.'
     ]}), ASSUMPTIONS], ignore_index=True)
     return workbook({'Subject Requirements': requirements, 'School Day Settings': pd.concat(day_parts, ignore_index=True),

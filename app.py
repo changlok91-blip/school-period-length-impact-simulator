@@ -9,7 +9,7 @@ import simulator
 # Refresh it when the new UI needs a function absent from that loaded copy.
 if not all(hasattr(simulator, name) for name in (
     'sample_data', 'template', 'read_inputs', 'parse_choices',
-    'custom_template', 'curriculum_allocation', 'estimate_week',
+    'custom_template', 'curriculum_allocation', 'estimate_week', 'elective_input_version',
 )):
     simulator = importlib.reload(simulator)
 
@@ -28,10 +28,11 @@ with st.expander('1. Set up your Excel template', expanded=True):
         stream_choices = st.text_area('Streams', 'General', key='template_streams')
     with columns[2]:
         subject_choices = st.text_area('Subjects', 'English\nMathematics\nMother Tongue\nScience', key='template_subjects')
+    elective_group_choices = st.text_area('Elective groups (optional, one name per line)', '', key='template_elective_groups', help='For example Humanities choice or Arts choice. Assign subjects to these groups in Excel; leave compulsory subjects ungrouped.')
     unit_choices = st.multiselect('Units available in the template', ['minutes', 'periods'], default=['minutes', 'periods'], key='template_units')
     st.caption('Only minutes and periods are supported. The first selected unit is prefilled; change it per row in Excel.')
     try:
-        template_bytes = custom_template(parse_choices(level_choices), parse_choices(stream_choices), parse_choices(subject_choices), unit_choices)
+        template_bytes = custom_template(parse_choices(level_choices), parse_choices(stream_choices), parse_choices(subject_choices), unit_choices, parse_choices(elective_group_choices))
     except ValueError as error:
         st.warning(str(error))
         st.download_button('Download my Excel template', b'', 'school_period_input_template.xlsx', disabled=True)
@@ -57,6 +58,7 @@ with st.expander('Edit inputs', expanded=False):
         st.subheader(name)
         edited.append(st.data_editor(frame, num_rows='dynamic', key=f'input_{name}_{upload.file_id if upload else "sample"}', width='stretch'))
 s, d, a = edited
+st.caption('In Subject Requirements, leave Elective group blank for compulsory subjects. Give alternative subjects the same group name. Each student chooses one subject from every group in their level and stream.')
 st.subheader('3. Subject periods and weekly curriculum time')
 length = st.select_slider('Minutes per period', options=[15, 20, 30, 35], value=30, key='period_length')
 st.caption('Minimum periods = required weekly minutes ÷ minutes per period, rounded up separately for each subject. Period-based requirements use the reference duration in your input.')
@@ -65,6 +67,15 @@ try:
 except (ValueError, TypeError, KeyError) as error:
     st.error(f'Please correct subject requirements: {error}')
     st.stop()
+
+elective_choices = {}
+options_by_group = base[base['Elective group'] != '']
+if not options_by_group.empty:
+    st.write('Choose one elective from each group for this example pathway')
+    st.caption('These choices determine the curriculum totals and weekly layout below. The first option is selected initially. Groups are independent; this does not check subject-combination restrictions.')
+    for (level, stream, group), options in options_by_group.groupby(['Level', 'Stream', 'Elective group'], sort=False):
+        key = 'elective_' + sha256(repr((level, stream, group, list(options.Subject))).encode()).hexdigest()[:20]
+        elective_choices[(level, stream, group)] = st.selectbox(f'{level} / {stream} — {group}', list(options.Subject), key=key)
 
 if 'period_adjustments' not in st.session_state:
     st.session_state.period_adjustments = {}
@@ -78,7 +89,7 @@ identities = list(base[['Level', 'Stream', 'Subject']].itertuples(index=False, n
 adjustments = {identity: st.session_state.period_adjustments.get((length, *identity), 0) for identity in identities}
 allocation_error = None
 try:
-    displayed, totals = curriculum_allocation(s, length, adjustments)
+    displayed, totals = curriculum_allocation(s, length, adjustments, elective_choices)
 except ValueError as error:
     allocation_error = str(error)
     displayed = base.copy()
@@ -106,17 +117,19 @@ st.data_editor(displayed, key=editor_key, on_change=save_adjustments,
 if allocation_error:
     st.error(allocation_error + ' Correct the adjustment above, or reset adjustments.')
     st.stop()
-shortfalls = displayed[displayed['Requirement status'] == 'Shortfall']
+shortfalls = displayed[(displayed['Requirement status'] == 'Shortfall') & displayed.Selected]
 if not shortfalls.empty:
     st.warning(f'{len(shortfalls)} subject requirement(s) are below minimum after your adjustments. See the Shortfall rows and negative Balance minutes above.')
 st.subheader('Weekly curriculum hours by level and stream')
-st.caption('Curriculum time = allocated periods × minutes per period, summed separately for each level and stream. Hours are decimal hours; Curriculum time shows exact hours and minutes. These totals include rounding and your adjustments.')
+st.caption('Curriculum time = allocated periods × minutes per period, summed separately for each level and stream. Hours are decimal hours; Curriculum time shows exact hours and minutes. These totals include compulsory subjects and exactly one selected option from each elective group, with rounding and your adjustments. Minimum/maximum pathway hours show the range across all independent elective choices.')
 st.dataframe(totals, column_config={'Curriculum hours': st.column_config.NumberColumn(format='%.2f'),
-                                  'Required minutes': st.column_config.NumberColumn(format='%.2f')},
+                                  'Required minutes': st.column_config.NumberColumn(format='%.2f'),
+                                  'Minimum pathway hours': st.column_config.NumberColumn(format='%.2f'),
+                                  'Maximum pathway hours': st.column_config.NumberColumn(format='%.2f')},
              hide_index=True, width='stretch')
 
 st.subheader('4. Estimated weekly layout and dismissal')
-st.caption('Uses your adjusted periods. Earliest dismissal is mandatory; latest dismissal is a hard limit. The estimate tries to keep dismissal times close by balancing against clock times, rather than equal period counts. Unallocated school time is not extra curriculum and needs a school activity or supervision plan. Teaching blocks are generic: subjects, teachers and rooms have not been scheduled.')
+st.caption('Uses compulsory subjects and your selected electives, with adjusted periods. Other elective pathways can have different dismissal estimates; select them above to explore. Earliest dismissal is mandatory; latest dismissal is a hard limit. The estimate tries to keep dismissal times close by balancing against clock times, rather than equal period counts. Unallocated school time is not extra curriculum and needs a school activity or supervision plan. Teaching blocks are generic: subjects, teachers and rooms have not been scheduled.')
 try:
     week_days, week_blocks, week_summary = estimate_week(displayed, d, a, length)
 except (ValueError, TypeError, KeyError) as error:
