@@ -308,6 +308,48 @@ def template():
     return workbook({'Subject Requirements': s, 'School Day Settings': d, 'Fixed Activities': a, 'Read Me': ASSUMPTIONS})
 
 
+def parse_choices(value):
+    """One choice per line, normalized and deduplicated in input order."""
+    return list(dict.fromkeys(line.strip() for line in value.splitlines() if line.strip()))
+
+
+def custom_template(levels, streams, subjects, units=None):
+    """Create a blank requirement workbook from user-defined choices."""
+    units = ['minutes', 'periods'] if units is None else units
+    choices = {}
+    for label, values in zip(CHOICE_COLUMNS, [levels, streams, subjects, units]):
+        values = list(dict.fromkeys(str(v).strip() for v in values if str(v).strip()))
+        if not values or len(values) > LIST_LIMIT:
+            raise ValueError(f'{label}: enter between 1 and {LIST_LIMIT} choices.')
+        choices[label] = values
+    if not set(choices['Unit']) <= {'minutes', 'periods'}:
+        raise ValueError('Unit supports only minutes and periods.')
+    count = len(choices['Level']) * len(choices['Stream']) * len(choices['Subject'])
+    if count > INPUT_LIMIT:
+        raise ValueError(f'These choices create {count:,} rows; reduce them to at most {INPUT_LIMIT:,} combinations.')
+    rows = [[level, stream, subject, None, choices['Unit'][0], None]
+            for level in choices['Level'] for stream in choices['Stream'] for subject in choices['Subject']]
+    columns = ['Level', 'Stream', 'Subject', SUB[2], 'Unit', SUB[4]]
+    requirements = pd.DataFrame(rows, columns=columns)
+    # Copy explicitly illustrative day settings and breaks for each supplied level.
+    _, sample_days, sample_activities = sample_data()
+    day_parts, activity_parts = [], []
+    for level in choices['Level']:
+        days = sample_days[sample_days.Level == 'Sec 1'].copy()
+        activities = sample_activities[sample_activities.Level == 'Sec 1'].copy()
+        days['Level'], activities['Level'] = level, level
+        day_parts.append(days)
+        activity_parts.append(activities)
+    lists = pd.DataFrame({label: pd.Series(values, dtype='object') for label, values in choices.items()})
+    notes = pd.concat([pd.DataFrame({'Assumption': [
+        'Custom template: enter every weekly requirement before upload. Blank requirements are incomplete, not zero.',
+        'One row is created for every level/stream/subject combination. Delete rows that do not apply.',
+        'School day settings and activities are illustrative defaults. Replace them with your own school settings.'
+    ]}), ASSUMPTIONS], ignore_index=True)
+    return workbook({'Subject Requirements': requirements, 'School Day Settings': pd.concat(day_parts, ignore_index=True),
+                     'Fixed Activities': pd.concat(activity_parts, ignore_index=True), 'Lists': lists, 'Read Me': notes})
+
+
 def read_inputs(source):
     sheets = pd.read_excel(source, sheet_name=None)
     names = ['Subject Requirements', 'School Day Settings', 'Fixed Activities']

@@ -1,13 +1,33 @@
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-from simulator import (sample_data, template, read_inputs, calculate, workbook, ASSUMPTIONS, DAYS, clock)
+from simulator import (sample_data, template, read_inputs, calculate, workbook, ASSUMPTIONS, DAYS, clock, parse_choices, custom_template)
 
 st.set_page_config(page_title='School Period Length Impact Simulator', layout='wide')
 st.title('School Period Length Impact Simulator')
 st.caption('Version 1 · Decision support for Singapore secondary school planners')
 st.info('Synthetic examples only — these are not official MOE minimums. Dismissal times are estimates; this application does not generate or validate a subject timetable.')
-st.download_button('Download Excel input template', template(), 'school_period_input_template.xlsx')
+with st.expander('1. Set up your Excel template', expanded=True):
+    st.write('Enter your choices below, one per line. Click outside a box after editing to update the download.')
+    columns = st.columns(3)
+    with columns[0]:
+        level_choices = st.text_area('Levels', 'Sec 1\nSec 2\nSec 3\nSec 4', key='template_levels')
+    with columns[1]:
+        stream_choices = st.text_area('Streams', 'General', key='template_streams')
+    with columns[2]:
+        subject_choices = st.text_area('Subjects', 'English\nMathematics\nMother Tongue\nScience', key='template_subjects')
+    unit_choices = st.multiselect('Units available in the template', ['minutes', 'periods'], default=['minutes', 'periods'], key='template_units')
+    st.caption('Only minutes and periods are supported. The first selected unit is prefilled; change it per row in Excel.')
+    try:
+        template_bytes = custom_template(parse_choices(level_choices), parse_choices(stream_choices), parse_choices(subject_choices), unit_choices)
+    except ValueError as error:
+        st.warning(str(error))
+        st.download_button('Download my Excel template', b'', 'school_period_input_template.xlsx', disabled=True)
+    else:
+        st.download_button('Download my Excel template', template_bytes, 'school_period_input_template.xlsx', type='primary')
+    st.caption('The workbook has a row for every level × stream × subject combination. Fill in the numeric requirements and delete rows that do not apply. Check the illustrative school-day times and breaks before uploading. These choices prepare the download; they do not change the dashboard below.')
+    st.download_button('Download synthetic example instead', template(), 'school_period_example.xlsx')
+st.subheader('2. Upload your completed workbook')
 st.caption('In Excel, maintain dropdown choices on the Lists sheet. Keep Unit as minutes or periods. Numeric requirements are entered on Subject Requirements.')
 upload = st.file_uploader('Upload completed template', type=['xlsx'])
 if upload:

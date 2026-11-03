@@ -67,3 +67,40 @@ def test_numeric_upload_validation(column, value):
     s.loc[0, column] = value
     with pytest.raises(ValueError):
         calculate(s, d, a)
+
+
+def test_personalized_template_contains_choices_and_no_invented_requirements():
+    from simulator import custom_template
+    data = custom_template(['Year A', 'Year B'], ['G1', 'G2'], ['Math', 'Art'], ['periods'])
+    book = load_workbook(BytesIO(data))
+    assert [c.value for c in book['Subject Requirements'][1]][:3] == ['Level', 'Stream', 'Subject']
+    inputs = read_inputs(BytesIO(data))
+    s, d, a = inputs
+    assert len(s) == 8
+    assert set(s.Level) == {'Year A', 'Year B'}
+    assert set(s.Stream) == {'G1', 'G2'}
+    assert set(s.Subject) == {'Math', 'Art'}
+    assert s['Minimum weekly requirement'].isna().all()
+    assert s['Reference period duration in minutes'].isna().all()
+    assert set(s.Unit) == {'periods'}
+    assert len(d) == 10 and set(a.Level) == {'Year A', 'Year B'}
+    s['Minimum weekly requirement'] = 5
+    s['Reference period duration in minutes'] = 30
+    result = calculate(s, d, a)
+    assert len(result['Comparison']) == 16
+    assert set(result['Subject Calculations']['Required minutes']) == {150}
+    assert len(book['Subject Requirements'].data_validations.dataValidation) == 6
+
+
+@pytest.mark.parametrize('levels,streams,subjects,units', [([], ['G1'], ['Math'], None), (['Sec 1'], [], ['Math'], None), (['Sec 1'], ['G1'], [], None), (['Sec 1'], ['G1'], ['Math'], []), (['Sec 1'], ['G1'], ['Math'], ['hours']), ([str(i) for i in range(10)], [str(i) for i in range(10)], [str(i) for i in range(51)], None)])
+def test_invalid_template_setup(levels, streams, subjects, units):
+    from simulator import custom_template
+    with pytest.raises(ValueError):
+        custom_template(levels, streams, subjects, units)
+
+
+def test_choice_normalization():
+    from simulator import parse_choices, custom_template
+    assert parse_choices(' Sec 1\n\nSec 2\nSec 1 \n') == ['Sec 1', 'Sec 2']
+    s, _, _ = read_inputs(BytesIO(custom_template(['Sec 1', 'Sec 1 '], ['G1'], ['Math'])))
+    assert len(s) == 1
