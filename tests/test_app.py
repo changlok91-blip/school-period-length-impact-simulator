@@ -1,31 +1,102 @@
+import json
 from pathlib import Path
 from streamlit.testing.v1 import AppTest
+from streamlit.proto.WidgetStates_pb2 import WidgetState
 
 
-def test_dashboard_filters_and_manual_allocations():
-    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py')).run(timeout=30)
+APP = str(Path(__file__).resolve().parents[1] / 'app.py')
+
+
+def edit_adjustment(app, row, adjustment):
+    """Send the real data-editor widget event (AppTest lacks a public editor API)."""
+    editor = next(item for item in app.dataframe if 'Adjustment (periods)' in item.value and 'Subject' in item.value)
+    states = app._tree.get_widget_states()
+    state = WidgetState(id=editor.proto.id, string_value=json.dumps({
+        'edited_rows': {str(row): {'Adjustment (periods)': adjustment}},
+        'added_rows': [], 'deleted_rows': []}))
+    states.widgets.append(state)
+    app._run(states)
+    return app
+
+
+def subject_table(app):
+    return next(item.value for item in app.dataframe if 'Requirement status' in item.value)
+
+
+def totals_table(app):
+    return next(item.value for item in app.dataframe if 'Curriculum hours' in item.value)
+
+
+def test_focused_outputs_and_live_adjustment():
+    app = AppTest.from_file(APP).run(timeout=30)
     assert not app.exception
-    app.selectbox[0].select('Sec 2').run()
+    assert len(app.select_slider) == 1
+    assert app.select_slider[0].label == 'Minutes per period'
+    assert len(app.get('plotly_chart')) == 0
+    assert not any('Comparison' in item.value or 'Dismissal' in item.value for item in app.subheader)
+    initial = totals_table(app).iloc[0]['Curriculum minutes']
+    edit_adjustment(app, 0, 2)
     assert not app.exception
-    app.checkbox[0].check().run()
-    assert not app.exception
+    assert subject_table(app).iloc[0]['Allocated periods'] == 9  # 210 / 30 + 2
+    assert totals_table(app).iloc[0]['Curriculum minutes'] == initial + 60
+    # A second edit applies immediately; no second click is needed.
+    edit_adjustment(app, 0, -1)
+    assert subject_table(app).iloc[0]['Allocated periods'] == 6
+    assert subject_table(app).iloc[0]['Requirement status'] == 'Shortfall'
+    assert totals_table(app).iloc[0]['Subjects below minimum'] == 1
+    assert app.warning
+
+
+def test_scenario_adjustments_persist_and_reset():
+    app = AppTest.from_file(APP).run(timeout=30)
+    edit_adjustment(app, 0, 2)
     app.select_slider[0].set_value(35).run()
+    assert subject_table(app).iloc[0]['Minimum periods'] == 6
+    assert subject_table(app).iloc[0]['Adjustment (periods)'] == 0
+    edit_adjustment(app, 0, 1)
+    app.select_slider[0].set_value(30).run()
+    assert subject_table(app).iloc[0]['Adjustment (periods)'] == 2
+    assert subject_table(app).iloc[0]['Allocated periods'] == 9
+    next(button for button in app.button if button.label == 'Reset all period adjustments').click().run()
+    assert subject_table(app).iloc[0]['Adjustment (periods)'] == 0
+    app.select_slider[0].set_value(35).run()
+    assert subject_table(app).iloc[0]['Adjustment (periods)'] == 0
     assert not app.exception
 
 
-def test_multiple_stream_dashboard(monkeypatch):
+def test_invalid_adjustment_can_be_corrected():
+    app = AppTest.from_file(APP).run(timeout=30)
+    edit_adjustment(app, 0, -100)
+    assert not app.exception
+    assert app.error and 'negative' in app.error[0].value
+    assert not any('Curriculum hours' in item.value for item in app.dataframe)
+    edit_adjustment(app, 0, 1)
+    assert not app.exception and not app.error
+    assert subject_table(app).iloc[0]['Allocated periods'] == 8
+    assert totals_table(app).iloc[0]['Curriculum hours'] > 0
+
+
+def test_stream_totals_and_row_identity(monkeypatch):
     import pandas as pd
     import simulator
     subjects, days, activities = simulator.sample_data()
     other = subjects.copy()
     other['Stream'] = 'G2'
     other['Minimum weekly requirement'] *= 2
-    monkeypatch.setattr(simulator, 'sample_data', lambda: (pd.concat([subjects, other], ignore_index=True), days, activities))
-    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py')).run(timeout=30)
-    assert not app.exception
-    app.selectbox[1].select('G2').run()
-    assert not app.exception
-    app.checkbox[0].check().run()
+    data = pd.concat([subjects, other], ignore_index=True)
+    monkeypatch.setattr(simulator, 'sample_data', lambda: (data, days, activities))
+    app = AppTest.from_file(APP).run(timeout=30)
+    before = totals_table(app).set_index(['Level', 'Stream'])
+    edit_adjustment(app, 0, 2)
+    after = totals_table(app).set_index(['Level', 'Stream'])
+    assert after.loc[('Sec 1', 'General'), 'Curriculum minutes'] == before.loc[('Sec 1', 'General'), 'Curriculum minutes'] + 60
+    assert after.loc[('Sec 1', 'G2'), 'Curriculum minutes'] == before.loc[('Sec 1', 'G2'), 'Curriculum minutes']
+    # Reordering requirements must never move the adjustment to a different subject.
+    data = data.iloc[::-1].reset_index(drop=True)
+    app.run()
+    detail = subject_table(app).set_index(['Level', 'Stream', 'Subject'])
+    assert detail.loc[('Sec 1', 'General', 'English'), 'Adjustment (periods)'] == 2
+    assert detail['Adjustment (periods)'].sum() == 2
     assert not app.exception
 
 
@@ -37,7 +108,7 @@ def test_template_setup_updates_download_choices(monkeypatch):
         calls.append(args)
         return original(*args)
     monkeypatch.setattr(simulator, 'custom_template', capture)
-    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py')).run(timeout=30)
+    app = AppTest.from_file(APP).run(timeout=30)
     app.text_area(key='template_levels').set_value('Custom level').run()
     app.text_area(key='template_streams').set_value('Stream A\nStream B').run()
     app.text_area(key='template_subjects').set_value('Biology').run()
@@ -46,5 +117,15 @@ def test_template_setup_updates_download_choices(monkeypatch):
     app.text_area(key='template_levels').set_value('').run()
     assert not app.exception
     assert any('Level: enter' in item.value for item in app.warning)
-    # Invalid setup must not prevent using the existing dashboard.
-    assert app.selectbox[0].value == 'All levels'
+    assert len(app.select_slider) == 1
+    assert not totals_table(app).empty
+
+
+def test_curriculum_view_does_not_depend_on_day_capacity(monkeypatch):
+    import simulator
+    subjects, days, activities = simulator.sample_data()
+    days = days.iloc[:0]
+    monkeypatch.setattr(simulator, 'sample_data', lambda: (subjects, days, activities))
+    app = AppTest.from_file(APP).run(timeout=30)
+    assert not app.exception and not app.error
+    assert not totals_table(app).empty

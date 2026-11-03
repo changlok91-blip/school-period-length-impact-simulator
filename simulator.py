@@ -180,6 +180,69 @@ def calculate(subjects, days, activities, overrides=None):
     return {name: pd.concat(frames, ignore_index=True) for name, frames in pieces.items()}
 
 
+def curriculum_allocation(subjects, period_length, adjustments=None):
+    """Subject minima plus signed deltas; no school-day capacity assumptions.
+
+    Adjustments are keyed by (Level, Stream, Subject) for the selected duration.
+    Returns subject detail and independent weekly totals for each level/stream.
+    """
+    duration = number(period_length, 'Minutes per period', True)
+    if duration != int(duration):
+        raise ValueError('Minutes per period must be a whole number.')
+    duration = int(duration)
+    subjects = with_stream(subjects)
+    needed = ['Level', 'Stream', 'Subject', SUB[2], 'Unit', SUB[4]]
+    if not set(needed) <= set(subjects):
+        raise ValueError('Subject Requirements: missing columns ' + ', '.join(c for c in needed if c not in subjects))
+    if subjects.empty:
+        raise ValueError('Enter at least one subject requirement.')
+    for column in ['Level', 'Stream', 'Subject']:
+        if subjects[column].isna().any() or any(not str(v).strip() for v in subjects[column]):
+            raise ValueError(f'{column} must be filled for every subject row.')
+    if subjects.duplicated(['Level', 'Stream', 'Subject']).any():
+        raise ValueError('Duplicate subject rows are not allowed within the same level and stream.')
+    rows = []
+    for _, r in subjects.iterrows():
+        required = number(r[SUB[2]], f'{r.Subject}: minimum weekly requirement')
+        if r.Unit not in ['minutes', 'periods']:
+            raise ValueError('Unit must be minutes or periods.')
+        if r.Unit == 'periods' or (pd.notna(r[SUB[4]]) and str(r[SUB[4]]).strip()):
+            reference = number(r[SUB[4]], f'{r.Subject}: reference period duration', True)
+            if r.Unit == 'periods':
+                required *= reference
+        minimum = int((required / Decimal(duration)).to_integral_value(rounding=ROUND_CEILING))
+        raw = (adjustments or {}).get((r.Level, r.Stream, r.Subject), 0)
+        try:
+            adjustment = Decimal(str(raw))
+            if not adjustment.is_finite() or adjustment != int(adjustment):
+                raise ValueError()
+        except Exception:
+            raise ValueError(f'{r.Subject}: adjustment must be a signed whole number of periods.')
+        adjustment = int(adjustment)
+        allocated = minimum + adjustment
+        if allocated < 0:
+            raise ValueError(f'{r.Level} / {r.Stream} / {r.Subject}: adjustment cannot make allocated periods negative (minimum {minimum}).')
+        actual = allocated * duration
+        rows.append({'Level': r.Level, 'Stream': r.Stream, 'Subject': r.Subject,
+                     'Required minutes': float(required), 'Minimum periods': minimum,
+                     'Adjustment (periods)': adjustment, 'Allocated periods': allocated,
+                     'Actual minutes': actual, 'Balance minutes': float(Decimal(actual) - required),
+                     'Requirement status': 'Shortfall' if Decimal(actual) < required else 'Met'})
+    detail = pd.DataFrame(rows)
+    totals = []
+    for (level, stream), group in detail.groupby(['Level', 'Stream'], sort=False):
+        minutes = int(group['Actual minutes'].sum())
+        totals.append({'Level': level, 'Stream': stream,
+                       'Required minutes': group['Required minutes'].sum(),
+                       'Minimum periods': int(group['Minimum periods'].sum()),
+                       'Adjustment (periods)': int(group['Adjustment (periods)'].sum()),
+                       'Allocated periods': int(group['Allocated periods'].sum()),
+                       'Curriculum minutes': minutes, 'Curriculum hours': minutes / 60,
+                       'Curriculum time': f'{minutes // 60}h {minutes % 60:02d}m',
+                       'Subjects below minimum': int((group['Requirement status'] == 'Shortfall').sum())})
+    return detail, pd.DataFrame(totals)
+
+
 def sample_data():
     subjects, days, acts = [], [], []
     for n in range(1, 5):
