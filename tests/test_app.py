@@ -129,3 +129,13 @@ def test_curriculum_view_does_not_depend_on_day_capacity(monkeypatch):
     app = AppTest.from_file(APP).run(timeout=30)
     assert not app.exception and not app.error
     assert not totals_table(app).empty
+
+
+def test_startup_refreshes_cached_helper_missing_new_function(monkeypatch):
+    import simulator
+    # Simulate the previous module still loaded in a long-running Cloud process.
+    monkeypatch.delattr(simulator, 'curriculum_allocation')
+    app = AppTest.from_file(APP).run(timeout=30)
+    assert not app.exception
+    assert not totals_table(app).empty
+    assert callable(simulator.curriculum_allocation)
