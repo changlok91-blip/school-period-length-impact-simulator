@@ -32,8 +32,8 @@ def test_focused_outputs_and_live_adjustment():
     assert not app.exception
     assert len(app.select_slider) == 1
     assert app.select_slider[0].label == 'Minutes per period'
-    assert len(app.get('plotly_chart')) == 0
-    assert not any('Comparison' in item.value or 'Dismissal' in item.value for item in app.subheader)
+    assert len(app.get('plotly_chart')) == 1
+    assert not any('Four-scenario comparison' in item.value for item in app.subheader)
     initial = totals_table(app).iloc[0]['Curriculum minutes']
     edit_adjustment(app, 0, 2)
     assert not app.exception
@@ -139,3 +139,18 @@ def test_startup_refreshes_cached_helper_missing_new_function(monkeypatch):
     assert not app.exception
     assert not totals_table(app).empty
     assert callable(simulator.curriculum_allocation)
+
+
+def test_weekly_layout_follows_adjustments_and_stream_selection():
+    app = AppTest.from_file(APP).run(timeout=30)
+    def weekly_summary():
+        return next(item.value for item in app.dataframe if 'Unplaced periods' in item.value)
+    before = weekly_summary().iloc[0]['Placed periods']
+    edit_adjustment(app, 0, 2)
+    assert not app.exception
+    assert weekly_summary().iloc[0]['Placed periods'] == before + 2
+    app.selectbox(key='week_level').select('Sec 3').run()
+    daily = next(item.value for item in app.dataframe if 'Unallocated school minutes' in item.value)
+    assert set(daily.Level) == {'Sec 3'}
+    assert (daily['Estimated dismissal'] >= daily['Earliest dismissal']).all()
+    assert (daily['Estimated dismissal'] <= daily['Latest dismissal']).all()

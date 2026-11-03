@@ -1,5 +1,7 @@
 from hashlib import sha256
 import streamlit as st
+import pandas as pd
+import plotly.express as px
 import importlib
 import simulator
 
@@ -7,16 +9,16 @@ import simulator
 # Refresh it when the new UI needs a function absent from that loaded copy.
 if not all(hasattr(simulator, name) for name in (
     'sample_data', 'template', 'read_inputs', 'parse_choices',
-    'custom_template', 'curriculum_allocation',
+    'custom_template', 'curriculum_allocation', 'estimate_week',
 )):
     simulator = importlib.reload(simulator)
 
-from simulator import (sample_data, template, read_inputs, parse_choices, custom_template, curriculum_allocation)
+from simulator import (sample_data, template, read_inputs, parse_choices, custom_template, curriculum_allocation, estimate_week)
 
 st.set_page_config(page_title='School Period Length Impact Simulator', layout='wide')
 st.title('School Period Length Impact Simulator')
 st.caption('Version 1 · Decision support for Singapore secondary school planners')
-st.info('Synthetic examples only — these are not official MOE minimums. This view calculates weekly subject periods and curriculum hours. It does not check whether those periods fit into a timetable.')
+st.info('Synthetic examples only — these are not official MOE minimums. This view calculates weekly subject periods and curriculum hours. The weekly layout below is illustrative and does not validate a subject timetable.')
 with st.expander('1. Set up your Excel template', expanded=True):
     st.write('Enter your choices below, one per line. Click outside a box after editing to update the download.')
     columns = st.columns(3)
@@ -49,7 +51,7 @@ if upload:
 else:
     inputs = sample_data()
 with st.expander('Edit inputs', expanded=False):
-    st.caption('Enter a Stream for every subject row (for example G1, G2 or G3). Enter a separate full set of subjects for each stream. School day settings and fixed activities are retained for future outputs; they do not affect the curriculum-hours calculation below. Use HH:MM times. Each level needs Monday–Friday. Fixed activities are mandatory, must lie within the day, and cannot overlap. Add as many activity rows as needed in the third sheet.')
+    st.caption('Enter a Stream for every subject row (for example G1, G2 or G3). Enter a separate full set of subjects for each stream. School day settings and fixed activities determine the weekly layout. Earliest dismissal is mandatory; any gap to that time is shown as unallocated school time. These settings do not change curriculum hours. Use HH:MM times. Each level needs Monday–Friday. Fixed activities are mandatory, must lie within the day, and cannot overlap. Add as many activity rows as needed in the third sheet.')
     edited = []
     for name, frame in zip(['Subject Requirements', 'School Day Settings', 'Fixed Activities'], inputs):
         st.subheader(name)
@@ -112,3 +114,37 @@ st.caption('Curriculum time = allocated periods × minutes per period, summed se
 st.dataframe(totals, column_config={'Curriculum hours': st.column_config.NumberColumn(format='%.2f'),
                                   'Required minutes': st.column_config.NumberColumn(format='%.2f')},
              hide_index=True, width='stretch')
+
+st.subheader('4. Estimated weekly layout and dismissal')
+st.caption('Uses your adjusted periods. Earliest dismissal is mandatory; latest dismissal is a hard limit. The estimate tries to keep dismissal times close by balancing against clock times, rather than equal period counts. Unallocated school time is not extra curriculum and needs a school activity or supervision plan. Teaching blocks are generic: subjects, teachers and rooms have not been scheduled.')
+try:
+    week_days, week_blocks, week_summary = estimate_week(displayed, d, a, length)
+except (ValueError, TypeError, KeyError) as error:
+    st.warning(f'Weekly layout unavailable: correct School Day Settings or Fixed Activities: {error}')
+    st.stop()
+dismissals = week_days.pivot(index=['Level', 'Stream'], columns='Day', values='Estimated dismissal').reindex(columns=['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']).reset_index()
+st.write('Estimated dismissal for every level and stream')
+st.dataframe(dismissals.merge(week_summary, on=['Level', 'Stream']), hide_index=True, width='stretch')
+for _, row in week_summary[week_summary['Unplaced periods'] > 0].iterrows():
+    st.warning(f"{row.Level} / {row.Stream}: {row['Unplaced periods']} allocated periods cannot fit before the latest dismissal limits. The layout shows only periods that fit; it is incomplete.")
+week_level = st.selectbox('Level for weekly view', list(week_summary.Level.unique()), key='week_level')
+week_stream = st.selectbox('Stream for weekly view', list(week_summary.loc[week_summary.Level == week_level, 'Stream']), key='week_stream')
+selected_days = week_days[(week_days.Level == week_level) & (week_days.Stream == week_stream)]
+selected_blocks = week_blocks[(week_blocks.Level == week_level) & (week_blocks.Stream == week_stream)].copy()
+if selected_blocks.empty:
+    st.info('No teaching or fixed activity blocks in this weekly layout.')
+else:
+    selected_blocks['Start time'] = pd.to_datetime('2000-01-01 ' + selected_blocks.Start)
+    selected_blocks['End time'] = pd.to_datetime('2000-01-01 ' + selected_blocks.End)
+    fig = px.timeline(selected_blocks, x_start='Start time', x_end='End time', y='Day', color='Type',
+                      hover_name='Activity', hover_data={'Start': True, 'End': True, 'Start time': False, 'End time': False},
+                      category_orders={'Day': ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']},
+                      color_discrete_map={'Teaching': '#2563eb', 'Fixed activity': '#d97706', 'Unallocated school time': '#94a3b8'},
+                      title=f'{week_level} / {week_stream} — illustrative week ({length}-minute periods)')
+    fig.update_xaxes(tickformat='%H:%M', title='Time of day')
+    fig.update_yaxes(autorange='reversed', title='')
+    fig.update_layout(legend_title_text='Time use')
+    st.plotly_chart(fig, width='stretch')
+st.dataframe(selected_days, hide_index=True, width='stretch')
+with st.expander('Exact weekly blocks'):
+    st.dataframe(selected_blocks[['Day', 'Start', 'End', 'Type', 'Activity']], hide_index=True, width='stretch')

@@ -243,6 +243,74 @@ def curriculum_allocation(subjects, period_length, adjustments=None):
     return detail, pd.DataFrame(totals)
 
 
+def estimate_week(allocations, days, activities, period_length):
+    """Illustrative teaching slots only; earliest dismissal is a mandatory floor.
+
+    Find an early common clock-time horizon with enough slots, then assign the
+    next period to the day whose resulting dismissal is earliest. No subjects
+    are placed. Gaps to the mandatory floor are explicit unallocated school time.
+    """
+    duration = number(period_length, 'Minutes per period', True)
+    if duration != int(duration):
+        raise ValueError('Minutes per period must be a whole number.')
+    duration = int(duration)
+    levels = allocations.Level.unique()
+    dummy = pd.DataFrame([[level, 'Schedule', 0, 'minutes', None] for level in levels], columns=SUB)
+    validate(dummy, days, activities)
+    daily, blocks, summaries = [], [], []
+    for (level, stream), group in allocations.groupby(['Level', 'Stream'], sort=False):
+        demand = 0
+        for value in group['Allocated periods']:
+            count = number(value, 'Allocated periods')
+            if count != int(count):
+                raise ValueError('Allocated periods must be whole numbers.')
+            demand += int(count)
+        ds = [days[(days.Level == level) & (days['Day of week'] == day)].iloc[0] for day in DAYS]
+        acts = [activities[(activities.Level == level) & (activities['Day of week'] == day)] for day in DAYS]
+        slots = [slots_for_day(day, act, duration) for day, act in zip(ds, acts)]
+        floors = [max([minute(day[DAY[3]])] + [minute(v) for v in act.End]) for day, act in zip(ds, acts)]
+        capacity = sum(map(len, slots))
+        to_place = min(demand, capacity)
+        # Small bounded clock-time search; each day's earliest/latest limits remain hard.
+        for target in range(min(floors), max(minute(day[DAY[4]]) for day in ds) + 1):
+            limits = [min(minute(day[DAY[4]]), max(target, floor)) for day, floor in zip(ds, floors)]
+            caps = [sum(end <= limit for end in slot) for slot, limit in zip(slots, limits)]
+            if sum(caps) >= to_place:
+                break
+        counts = [0] * 5
+        for _ in range(to_place):
+            candidates = [i for i in range(5) if counts[i] < caps[i]]
+            i = min(candidates, key=lambda i: (max(floors[i], slots[i][counts[i]]), counts[i], i))
+            counts[i] += 1
+        finishes = []
+        for i, day in enumerate(ds):
+            finish = max(floors[i], slots[i][counts[i]-1] if counts[i] else minute(day[DAY[2]]))
+            finishes.append(finish)
+            occupied = [(end-duration, end, 'Teaching', f'Teaching period {j+1}') for j, end in enumerate(slots[i][:counts[i]])]
+            occupied += [(minute(row.Start), minute(row.End), 'Fixed activity', str(row.Activity)) for _, row in acts[i].iterrows()]
+            occupied.sort()
+            segments, cursor = [], minute(day[DAY[2]])
+            for start, end, kind, label in occupied:
+                if start > cursor:
+                    segments.append((cursor, start, 'Unallocated school time', 'Unallocated school time'))
+                segments.append((start, end, kind, label))
+                cursor = end
+            if cursor < finish:
+                segments.append((cursor, finish, 'Unallocated school time', 'Unallocated school time'))
+            unallocated = sum(end-start for start, end, kind, _ in segments if kind == 'Unallocated school time')
+            daily.append({'Level': level, 'Stream': stream, 'Day': DAYS[i], 'Starting time': clock(minute(day[DAY[2]])),
+                          'Earliest dismissal': clock(minute(day[DAY[3]])), 'Latest dismissal': clock(minute(day[DAY[4]])),
+                          'Estimated dismissal': clock(finish), 'Assigned periods': counts[i], 'Capacity periods': len(slots[i]),
+                          'Unallocated school minutes': unallocated})
+            for start, end, kind, label in segments:
+                blocks.append({'Level': level, 'Stream': stream, 'Day': DAYS[i], 'Start': clock(start), 'End': clock(end),
+                               'Start minute': start, 'End minute': end, 'Type': kind, 'Activity': label})
+        summaries.append({'Level': level, 'Stream': stream, 'Allocated periods': demand, 'Placed periods': to_place,
+                          'Weekly capacity periods': capacity, 'Unplaced periods': demand-to_place,
+                          'Dismissal spread minutes': max(finishes)-min(finishes)})
+    return pd.DataFrame(daily), pd.DataFrame(blocks, columns=['Level', 'Stream', 'Day', 'Start', 'End', 'Start minute', 'End minute', 'Type', 'Activity']), pd.DataFrame(summaries)
+
+
 def sample_data():
     subjects, days, acts = [], [], []
     for n in range(1, 5):
@@ -358,9 +426,9 @@ ASSUMPTIONS = pd.DataFrame({'Assumption': [
     'Whole periods are rounded up separately for each subject before totals.',
     'Fixed Activities contains one row per activity linked to School Day Settings by level and day.',
     'Periods pack from each teaching-window start; leftover fragments are unusable.',
-    'Balanced allocation water-fills daily period counts subject to capacity; ties favor Monday.',
+    'Weekly layout seeks an early common dismissal horizon, then places each next period on the day with the earliest resulting dismissal. It is a heuristic.',
     'All fixed activities are mandatory; dismissal is after the last assigned lesson or fixed activity.',
-    'Earliest dismissal is a preference, not a minimum teaching requirement; no filler periods are added.',
+    'Weekly layout treats earliest dismissal as mandatory. Any gap to it is unallocated school time, not additional teaching.',
     'Latest dismissal is a hard capacity limit, so excess demand is unplaced rather than extended late.',
     'Estimates do not prove a valid subject timetable, nor model teachers, rooms, combinations or optimisation.'
 ]})

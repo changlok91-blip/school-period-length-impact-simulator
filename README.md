@@ -2,7 +2,7 @@
 
 A local Streamlit decision-support app for Singapore secondary school planners. All supplied requirements are synthetic examples, **not official MOE minimums**.
 
-The current dashboard focuses on one output: minimum whole periods per subject, editable period adjustments, and resulting weekly curriculum hours for each level and stream. Earlier comparison charts, heatmaps, dismissal estimates, capacity outputs and the full-results download have been removed from the UI so outputs can be added incrementally.
+The dashboard shows minimum whole periods per subject, editable period adjustments, weekly curriculum hours, and an illustrative five-day layout with dismissal estimates for each level and stream. The earlier four-scenario comparison and heatmap remain removed.
 
 ## Run locally
 
@@ -28,7 +28,7 @@ python -m pytest -q
 1. In **1. Set up your Excel template**, enter levels, streams and subjects, one per line. Choose `minutes`, `periods` or both as the available units. Click outside each edited box so the download updates.
 2. Click **Download my Excel template**. The workbook contains your choices and a blank weekly-requirement row for every level × stream × subject combination. Blank lines are ignored and duplicate choices are removed. Up to 1,000 choices per list and 5,000 generated combinations are supported.
 3. In Excel, delete combinations that do not apply and fill in every remaining requirement. The first selected unit is prefilled; change it per row as needed. Alternatively, download the populated synthetic example.
-4. Review the illustrative School Day Settings and Fixed Activities, then save as `.xlsx` and upload. These sheets remain in the workbook for future outputs; the current curriculum calculation uses subject requirements only.
+4. Review the illustrative School Day Settings and Fixed Activities, then save as `.xlsx` and upload. These sheets determine the weekly layout. The curriculum-hours calculation itself uses subject requirements only.
 
 Setting up a template does not change the active dashboard until you upload the completed workbook. Without an upload the app uses synthetic sample inputs. Expand **Edit inputs** to edit uploaded values directly in the app.
 
@@ -56,12 +56,24 @@ Adjustments are stored per subject identity and period length during the current
 
 ## Limits
 
-These are weekly allocated curriculum hours, not a timetable feasibility check. They are not compared against school-day capacity in the current view. Timetable slots, dismissal, teachers, venues, combinations, lesson sequencing, class counts, travel time and holidays are not modeled in this output. Totals describe a representative curriculum for each level/stream, not pooled school staffing demand. This app does not generate subject timetables or use OR-Tools.
+These are weekly allocated curriculum hours, not a timetable feasibility check. The weekly layout separately checks whole-period capacity against school-day settings. Teachers, venues, combinations, subject sequencing, class counts, travel time and holidays are not modeled. Totals describe a representative curriculum for each level/stream, not pooled school staffing demand. This app does not generate subject timetables or use OR-Tools.
 
 ## Files
 
 - `app.py`: template setup, input editors, minutes-per-period control and focused curriculum output.
-- `simulator.py`: Excel IO, validation and separate calculation functions. Earlier scenario/capacity functions remain available for future outputs and regression tests; the UI uses `curriculum_allocation`.
+- `simulator.py`: Excel IO, validation and separate calculation functions. The UI uses `curriculum_allocation` and `estimate_week`; earlier scenario functions remain for regression tests.
 - `school_period_input_template.xlsx`: populated synthetic example with dropdowns and numeric validation.
 - `tests/`: Excel, calculation and Streamlit interaction tests.
 - `requirements.txt`: runtime and test dependencies.
+
+## Illustrative weekly layout
+
+After the hours table, see Monday–Friday estimated dismissal times for every level/stream. Choose a level and stream to view a colour-coded timeline: teaching periods, fixed activities, and unallocated school time. Exact block start/end times and daily counts are available below the chart.
+
+The layout uses the current slider and adjusted allocations. School Day Settings and Fixed Activities apply to all streams in that level. Earliest dismissal is now a **mandatory floor**, not a preference, in this output. Latest dismissal is a hard upper limit. Periods pack from the start of uninterrupted teaching windows; no period crosses a fixed activity, and leftover fragments cannot be joined across breaks. All fixed activities remain mandatory, including those after the last teaching period.
+
+To balance clock times, the estimator finds the earliest common clock-time horizon that offers enough slots across all five days, clamped to each day's mandatory floor and latest limit. It then repeatedly assigns the next period to the day with the earliest resulting dismissal, breaking ties by period count and weekday. This is a heuristic; it does not guarantee the smallest possible dismissal spread. Different start times and daily limits may yield different dismissal times.
+
+If lessons end before the earliest dismissal (or before a later fixed activity), the gap is labelled **unallocated school time**. This is not counted as teaching or curriculum hours; the school must decide activities/supervision for it. A late mandatory activity can also determine dismissal. Insufficient weekly capacity is flagged as unplaced periods: the layout contains only periods that fit and does not imply the whole curriculum has been placed.
+
+Teaching blocks are generic numbered periods. No subjects, teachers or rooms are assigned, and the layout is not a valid subject timetable. Adjusting periods changes both curriculum hours and this layout immediately. Invalid day settings hide only the layout, preserving the curriculum table above.
