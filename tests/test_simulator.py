@@ -90,3 +90,48 @@ def test_excel_roundtrip():
     result = calculate(*inputs)
     sheets = pd.read_excel(BytesIO(workbook(result)), sheet_name=None)
     assert len(sheets['Comparison']) == 16
+
+
+def test_streams_calculated_independently():
+    s, d, a = fixture_inputs()
+    s['Stream'] = 'G1'
+    other = s.copy()
+    other['Stream'] = 'G2'
+    other[SUB[2]] = 300
+    s = pd.concat([s, other], ignore_index=True)
+    result = calculate(s, d, a, {(15, 'Sec 1', 'G1', 'Test'): 9})
+    rows = result['Comparison'].query('`Period length` == 15').set_index('Stream')
+    assert rows.loc['G1', 'Minimum periods'] == 10
+    assert rows.loc['G2', 'Minimum periods'] == 20
+    assert rows.loc['G1', 'Allocated periods'] == 9
+    assert rows.loc['G2', 'Allocated periods'] == 20
+    assert rows.loc['G1', 'Capacity periods'] == rows.loc['G2', 'Capacity periods']
+    detail = result['Subject Calculations'].query('`Period length` == 15').set_index('Stream')
+    assert detail.loc['G1', 'Balance minutes'] == -15
+    assert detail.loc['G2', 'Balance minutes'] == 0
+    assert len(result['Dismissal Estimates']) == 40
+
+
+@pytest.mark.parametrize('value', [None, '', '   '])
+def test_blank_stream_rejected(value):
+    s, d, a = fixture_inputs()
+    s['Stream'] = value
+    with pytest.raises(ValueError, match='Stream'):
+        calculate(s, d, a)
+
+
+def test_duplicate_within_stream_rejected():
+    s, d, a = fixture_inputs()
+    s['Stream'] = 'G1'
+    with pytest.raises(ValueError, match='Duplicate'):
+        calculate(pd.concat([s, s]), d, a)
+
+
+def test_legacy_and_stream_excel_roundtrip():
+    s, d, a = fixture_inputs()
+    data = workbook({'Subject Requirements': s, 'School Day Settings': d, 'Fixed Activities': a})
+    loaded = read_inputs(BytesIO(data))
+    assert loaded[0].Stream.tolist() == ['General']
+    loaded[0]['Stream'] = 'G3'
+    data = workbook({'Subject Requirements': loaded[0], 'School Day Settings': d, 'Fixed Activities': a})
+    assert read_inputs(BytesIO(data))[0].Stream.tolist() == ['G3']

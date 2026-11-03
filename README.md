@@ -28,11 +28,11 @@ Download the template in the app or use `school_period_input_template.xlsx`. Upl
 
 The workbook has three data sheets and a Read Me sheet:
 
-- **Subject Requirements**: one unique level/subject row, non-negative weekly requirement, unit `minutes` or `periods`, and a positive reference duration when unit is `periods`. Fractions are accepted as requirements; allocations must be whole periods.
+- **Subject Requirements**: one unique level/stream/subject row, non-negative weekly requirement, unit `minutes` or `periods`, and a positive reference duration when unit is `periods`. Fractions are accepted as requirements; allocations must be whole periods.
 - **School Day Settings**: exactly one row per level for each Monday–Friday, starting time, desired earliest dismissal and latest permitted dismissal. Enter times as 24-hour `HH:MM` strings or Excel time cells. Overnight days are unsupported.
 - **Fixed Activities**: one row per mandatory activity, level, weekday, activity name, start and end. This separate normalized sheet is part of the school-day settings and permits any number of breaks per day without duplicating daily settings. It can be empty with its headers retained. Activities must lie within the day and cannot overlap; adjacent activities are allowed.
 
-Subjects and day settings must contain the same levels. Duplicate subjects per level and duplicate daily settings are rejected. Reference duration is ignored for minute-based requirements.
+Subjects and day settings must contain the same levels. Duplicate subjects within a level/stream and duplicate daily settings are rejected. Reference duration is ignored for minute-based requirements.
 
 ## Calculations and interpretation
 
@@ -59,3 +59,11 @@ This is not a timetable generator and does not prove a feasible subject timetabl
 - `school_period_input_template.xlsx`: synthetic editable example workbook.
 - `tests/test_simulator.py`: calculation and workbook tests.
 - `requirements.txt`: runtime and test dependencies.
+
+## Stream-specific requirements
+
+Subject Requirements now includes a **Stream** column. Use your own stream names (for example G1, G2, G3). The sample uses General; rename it as needed. To add another stream, add a complete set of subject rows for that level with the new stream name and its own requirements. A subject may appear once in each level/stream combination. Blank streams and duplicates within a combination are rejected.
+
+Each level/stream gets independent subject rounding, weekly demand, capacity checks and dismissal estimates. Requirements from different streams are never summed. School Day Settings and Fixed Activities remain per level and are shared by its streams; different day schedules per stream are not supported. This is a representative student programme, not a combined staffing demand calculation. Stream filters, manual overrides and Excel results include the stream identity.
+
+Older workbooks without the Stream column load as General. Download the new template to enter streams directly. Charts use a separate series for each level/stream.

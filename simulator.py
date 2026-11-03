@@ -93,7 +93,7 @@ def slots_for_day(day, activities, length):
     return ends
 
 
-def calculate(subjects, days, activities, overrides=None):
+def _calculate_level(subjects, days, activities, overrides=None):
     validate(subjects, days, activities)
     overrides = overrides or {}
     detail, daily, summary, warnings = [], [], [], []
@@ -140,6 +140,41 @@ def calculate(subjects, days, activities, overrides=None):
     return {'Comparison': pd.DataFrame(summary), 'Subject Calculations': pd.DataFrame(detail), 'Dismissal Estimates': pd.DataFrame(daily), 'Warnings': pd.DataFrame(warnings, columns=['Period length', 'Level', 'Warning'])}
 
 
+
+def with_stream(subjects):
+    """Legacy workbooks form one General stream; explicit stream cells are required."""
+    subjects = subjects.copy()
+    if 'Stream' not in subjects:
+        subjects['Stream'] = 'General'
+    if subjects['Stream'].isna().any() or any(not str(v).strip() for v in subjects['Stream']):
+        raise ValueError('Stream must be filled for every subject row.')
+    subjects['Stream'] = subjects['Stream'].astype(str).str.strip()
+    return subjects
+
+
+def calculate(subjects, days, activities, overrides=None):
+    subjects = with_stream(subjects)
+    # Validate all levels/settings together, then reuse the single-level engine per stream.
+    validation = subjects.copy()
+    validation['Subject'] = range(len(validation))
+    validate(validation, days, activities)
+    if subjects.duplicated(['Level', 'Stream', 'Subject']).any():
+        raise ValueError('Duplicate subject rows are not allowed within the same level and stream.')
+    pieces = {}
+    for (level, stream), group in subjects.groupby(['Level', 'Stream'], sort=False):
+        scoped = {}
+        for key, value in (overrides or {}).items():
+            if len(key) == 4 and key[1:3] == (level, stream):
+                scoped[(key[0], level, key[3])] = value
+            elif len(key) == 3 and stream == 'General' and key[1] == level:
+                scoped[key] = value
+        result = _calculate_level(group, days[days.Level == level], activities[activities.Level == level], scoped)
+        for name, frame in result.items():
+            frame.insert(2, 'Stream', stream)
+            pieces.setdefault(name, []).append(frame)
+    return {name: pd.concat(frames, ignore_index=True) for name, frames in pieces.items()}
+
+
 def sample_data():
     subjects, days, acts = [], [], []
     for n in range(1, 5):
@@ -151,7 +186,7 @@ def sample_data():
             days.append([level, day, '07:30' if n < 3 else '07:45', '13:00', '14:30'])
             acts.extend([[level, day, 'Recess', '10:00', '10:30'], [level, day, 'Lunch', '12:30', '13:00']])
         acts.append([level, 'Monday', 'Assembly', '08:00', '08:30'])
-    return pd.DataFrame(subjects, columns=SUB), pd.DataFrame(days, columns=DAY), pd.DataFrame(acts, columns=ACT)
+    return with_stream(pd.DataFrame(subjects, columns=SUB)), pd.DataFrame(days, columns=DAY), pd.DataFrame(acts, columns=ACT)
 
 
 def workbook(sheets):
@@ -168,6 +203,8 @@ def workbook(sheets):
 
 
 ASSUMPTIONS = pd.DataFrame({'Assumption': [
+    'Each level and stream is calculated separately. School day settings and fixed activities are shared by all streams in that level.',
+    'Workbooks without Stream are loaded as General; blank stream cells in newer workbooks are invalid.',
     'All example requirements are synthetic, not official MOE minimums.',
     'Period-based requirements are converted using the supplied reference duration.',
     'Whole periods are rounded up separately for each subject before totals.',
@@ -191,4 +228,5 @@ def read_inputs(source):
     names = ['Subject Requirements', 'School Day Settings', 'Fixed Activities']
     if not set(names) <= set(sheets):
         raise ValueError('Workbook must contain: ' + ', '.join(names))
+    sheets['Subject Requirements'] = with_stream(sheets['Subject Requirements'])
     return tuple(sheets[n] for n in names)
