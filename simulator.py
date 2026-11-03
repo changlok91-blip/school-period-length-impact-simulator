@@ -149,7 +149,9 @@ def with_stream(subjects):
     if subjects['Stream'].isna().any() or any(not str(v).strip() for v in subjects['Stream']):
         raise ValueError('Stream must be filled for every subject row.')
     subjects['Stream'] = subjects['Stream'].astype(str).str.strip()
-    return subjects
+    columns = [column for column in subjects.columns if column != 'Stream']
+    columns.insert(columns.index('Level') + 1 if 'Level' in columns else 0, 'Stream')
+    return subjects.loc[:, columns]
 
 
 def calculate(subjects, days, activities, overrides=None):
