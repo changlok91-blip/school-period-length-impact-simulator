@@ -67,3 +67,11 @@ Subject Requirements now includes a **Stream** column. Use your own stream names
 Each level/stream gets independent subject rounding, weekly demand, capacity checks and dismissal estimates. Requirements from different streams are never summed. School Day Settings and Fixed Activities remain per level and are shared by its streams; different day schedules per stream are not supported. This is a representative student programme, not a combined staffing demand calculation. Stream filters, manual overrides and Excel results include the stream identity.
 
 Older workbooks without the Stream column load as General. Download the new template to enter streams directly. Charts use a separate series for each level/stream.
+
+## Excel dropdown choices and numeric fields
+
+Download the latest template and open it in Excel. First open **Lists**. Its four independent columns hold Level, Stream, Subject and Unit choices, one option per cell. Rename or append options below the existing entries, without blank gaps, within rows 2–1001. The list columns are independent: values on the same row do not describe a level/stream/subject combination. Unit must remain `minutes` and/or `periods`, since these are the two supported calculation methods.
+
+Return to **Subject Requirements** and select Level, Stream, Subject and Unit using the cell dropdowns. Stream stays next to Level. Dropdowns and numeric validation cover rows 2–5001, including new rows. Minimum weekly requirement accepts numbers >= 0 (including decimals). Reference period duration accepts positive numbers; it can be blank for minutes but must be provided for periods. Do not change column headers or sheet names. New levels still require five School Day Settings rows and any applicable Fixed Activities.
+
+Save as .xlsx and upload. Excel may allow paste operations to bypass its validation, so the app checks list membership and calculation validity on upload. Earlier templates without Lists continue to load. Result downloads also contain Lists and the Excel validation. Unused custom choices from an uploaded Lists sheet are preserved in the result download. Spreadsheet software other than Microsoft Excel may handle dynamic dropdown ranges differently.

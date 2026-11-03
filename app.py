@@ -8,6 +8,7 @@ st.title('School Period Length Impact Simulator')
 st.caption('Version 1 · Decision support for Singapore secondary school planners')
 st.info('Synthetic examples only — these are not official MOE minimums. Dismissal times are estimates; this application does not generate or validate a subject timetable.')
 st.download_button('Download Excel input template', template(), 'school_period_input_template.xlsx')
+st.caption('In Excel, maintain dropdown choices on the Lists sheet. Keep Unit as minutes or periods. Numeric requirements are entered on Subject Requirements.')
 upload = st.file_uploader('Upload completed template', type=['xlsx'])
 if upload:
     try:

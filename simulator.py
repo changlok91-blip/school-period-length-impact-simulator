@@ -3,6 +3,9 @@ from io import BytesIO
 from decimal import Decimal, ROUND_CEILING
 import datetime as dt
 import pandas as pd
+from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.workbook.defined_name import DefinedName
+from openpyxl.utils import get_column_letter
 
 DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
 LENGTHS = [15, 20, 30, 35]
@@ -61,7 +64,7 @@ def validate(subjects, days, activities):
         number(r[SUB[2]], 'Requirement')
         if r.Unit not in ['minutes', 'periods']:
             raise ValueError('Unit must be minutes or periods.')
-        if r.Unit == 'periods':
+        if r.Unit == 'periods' or (pd.notna(r[SUB[4]]) and str(r[SUB[4]]).strip()):
             number(r[SUB[4]], 'Reference period duration', True)
     for _, r in days.iterrows():
         start, early, late = [minute(r[c]) for c in DAY[2:]]
@@ -191,7 +194,82 @@ def sample_data():
     return with_stream(pd.DataFrame(subjects, columns=SUB)), pd.DataFrame(days, columns=DAY), pd.DataFrame(acts, columns=ACT)
 
 
+CHOICE_COLUMNS = ['Level', 'Stream', 'Subject', 'Unit']
+LIST_LIMIT = 1000
+INPUT_LIMIT = 5000
+
+
+def selection_lists(subjects):
+    """Seed editable lists from the actual workbook inputs."""
+    subjects = with_stream(subjects)
+    choices = {}
+    for column in CHOICE_COLUMNS:
+        values = list(dict.fromkeys(str(v).strip() for v in subjects[column].dropna() if str(v).strip()))
+        if column == 'Unit':
+            values = ['minutes', 'periods']
+        choices[column] = pd.Series(values, dtype='object')
+    return pd.DataFrame(choices)
+
+
+def validate_selections(subjects, lists):
+    if not set(CHOICE_COLUMNS) <= set(lists.columns):
+        raise ValueError('Lists sheet must contain Level, Stream, Subject and Unit columns.')
+    for column in CHOICE_COLUMNS:
+        values = lists[column].dropna().astype(str).str.strip()
+        allowed = set(values[values != ''])
+        if not allowed:
+            raise ValueError(f'Lists: {column} needs at least one choice.')
+        if column == 'Unit' and not allowed <= {'minutes', 'periods'}:
+            raise ValueError('Lists: Unit supports only minutes and periods.')
+        invalid = set(subjects[column].dropna().astype(str).str.strip()) - allowed
+        if invalid:
+            raise ValueError(f'Subject Requirements: {column} values are missing from Lists: {sorted(invalid)}')
+
+
+def add_excel_validation(book):
+    ws = book['Subject Requirements']
+    positions = {cell.value: cell.column_letter for cell in ws[1]}
+    for index, column in enumerate(CHOICE_COLUMNS, 1):
+        letter = get_column_letter(index)
+        name = f'Choices_{column}'
+        # Dynamic range expands as users append contiguous entries beneath each list.
+        source = f"'Lists'!${letter}$2:INDEX('Lists'!${letter}$2:${letter}${LIST_LIMIT+1},MAX(1,COUNTA('Lists'!${letter}$2:${letter}${LIST_LIMIT+1})))"
+        book.defined_names.add(DefinedName(name, attr_text=source))
+        rule = DataValidation(type='list', formula1=f'={name}', allow_blank=False)
+        rule.showDropDown = False
+        rule.errorTitle = 'Choose a listed value'
+        rule.error = 'Select an option, or add it to the Lists sheet first.'
+        rule.promptTitle = column
+        rule.prompt = 'Maintain choices on the Lists sheet.'
+        rule.showErrorMessage = rule.showInputMessage = True
+        rule.errorStyle = 'stop'
+        ws.add_data_validation(rule)
+        rule.add(f'{positions[column]}2:{positions[column]}{INPUT_LIMIT+1}')
+    for column, operator, blank in [('Minimum weekly requirement', 'greaterThanOrEqual', False), ('Reference period duration in minutes', 'greaterThan', True)]:
+        rule = DataValidation(type='decimal', operator=operator, formula1='0', allow_blank=blank)
+        rule.showErrorMessage = rule.showInputMessage = True
+        rule.errorStyle = 'stop'
+        rule.errorTitle = 'Enter a number'
+        rule.error = 'Enter a number >= 0.' if not blank else 'Enter a number > 0, or leave blank for minute-based requirements.'
+        rule.promptTitle = 'Numeric input'
+        rule.prompt = rule.error
+        ws.add_data_validation(rule)
+        rule.add(f'{positions[column]}2:{positions[column]}{INPUT_LIMIT+1}')
+
+
 def workbook(sheets):
+    sheets = dict(sheets)
+    if 'Subject Requirements' in sheets:
+        subjects = with_stream(sheets['Subject Requirements'])
+        sheets['Subject Requirements'] = subjects
+        if 'Lists' not in sheets:
+            existing = subjects.attrs.get('selection_lists')
+            current = selection_lists(subjects)
+            if existing is not None:
+                current = pd.DataFrame({column: pd.Series(list(dict.fromkeys(
+                    existing[column].dropna().astype(str).str.strip().tolist() + current[column].dropna().tolist()
+                )), dtype='object') for column in CHOICE_COLUMNS})
+            sheets['Lists'] = current
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         for name, frame in sheets.items():
@@ -201,10 +279,15 @@ def workbook(sheets):
             ws.auto_filter.ref = ws.dimensions
             for col in ws.columns:
                 ws.column_dimensions[col[0].column_letter].width = min(60, max(15, max(len(str(c.value or '')) for c in col)+2))
+        if 'Subject Requirements' in sheets:
+            add_excel_validation(writer.book)
     return output.getvalue()
 
 
 ASSUMPTIONS = pd.DataFrame({'Assumption': [
+    'Edit Level, Stream and Subject choices on Lists, one value per cell with no blank gaps. Append within rows 2–1001; dropdowns cover Subject Requirements rows 2–5001.',
+    'Unit supports only minutes and periods. Weekly requirements must be numeric and non-negative; reference durations must be positive numbers and are required for periods.',
+    'Excel validation may be bypassed by paste; uploaded workbooks are validated again. Older workbooks without Lists remain supported.',
     'Each level and stream is calculated separately. School day settings and fixed activities are shared by all streams in that level.',
     'Workbooks without Stream are loaded as General; blank stream cells in newer workbooks are invalid.',
     'All example requirements are synthetic, not official MOE minimums.',
@@ -231,4 +314,7 @@ def read_inputs(source):
     if not set(names) <= set(sheets):
         raise ValueError('Workbook must contain: ' + ', '.join(names))
     sheets['Subject Requirements'] = with_stream(sheets['Subject Requirements'])
+    if 'Lists' in sheets:
+        validate_selections(sheets['Subject Requirements'], sheets['Lists'])
+        sheets['Subject Requirements'].attrs['selection_lists'] = sheets['Lists']
     return tuple(sheets[n] for n in names)
