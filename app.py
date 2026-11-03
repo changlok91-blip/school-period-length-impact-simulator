@@ -9,7 +9,7 @@ import simulator
 # Refresh it when the new UI needs a function absent from that loaded copy.
 if not all(hasattr(simulator, name) for name in (
     'sample_data', 'template', 'read_inputs', 'parse_choices',
-    'custom_template', 'curriculum_allocation', 'estimate_week', 'elective_input_version',
+    'custom_template', 'curriculum_allocation', 'estimate_week', 'elective_input_version', 'expand_common_requirements',
 )):
     simulator = importlib.reload(simulator)
 
@@ -25,11 +25,12 @@ with st.expander('1. Set up your Excel template', expanded=True):
     with columns[0]:
         level_choices = st.text_area('Levels', 'Sec 1\nSec 2\nSec 3\nSec 4', key='template_levels')
     with columns[1]:
-        stream_choices = st.text_area('Streams', 'General', key='template_streams')
+        stream_choices = st.text_area('Streams', 'G3\nG2\nG1\nCMN', key='template_streams')
     with columns[2]:
         subject_choices = st.text_area('Subjects', 'English\nMathematics\nMother Tongue\nScience', key='template_subjects')
     elective_group_choices = st.text_area('Elective groups (optional, one name per line)', '', key='template_elective_groups', help='For example Humanities choice or Arts choice. Assign subjects to these groups in Excel; leave compulsory subjects ungrouped.')
     unit_choices = st.multiselect('Units available in the template', ['minutes', 'periods'], default=['minutes', 'periods'], key='template_units')
+    st.caption('CMN means common to G3, G2 and G1 at the same level. Enter common subjects once under CMN; use stream-specific rows for differences. Delete unused template rows. A specific row for the same subject replaces its CMN row, including its elective group.')
     st.caption('Only minutes and periods are supported. The first selected unit is prefilled; change it per row in Excel.')
     try:
         template_bytes = custom_template(parse_choices(level_choices), parse_choices(stream_choices), parse_choices(subject_choices), unit_choices, parse_choices(elective_group_choices))
@@ -58,7 +59,7 @@ with st.expander('Edit inputs', expanded=False):
         st.subheader(name)
         edited.append(st.data_editor(frame, num_rows='dynamic', key=f'input_{name}_{upload.file_id if upload else "sample"}', width='stretch'))
 s, d, a = edited
-st.caption('In Subject Requirements, leave Elective group blank for compulsory subjects. Give alternative subjects the same group name. Each student chooses one subject from every group in their level and stream.')
+st.caption('CMN rows are included in G3, G2 and G1 totals and weekly layouts; CMN is not a separate student stream. A stream-specific row replaces the common row for the same subject. In Subject Requirements, leave Elective group blank for compulsory subjects. Give alternative subjects the same group name. Each student chooses one subject from every group in their level and stream.')
 st.subheader('3. Subject periods and weekly curriculum time')
 length = st.select_slider('Minutes per period', options=[15, 20, 30, 35], value=30, key='period_length')
 st.caption('Minimum periods = required weekly minutes ÷ minutes per period, rounded up separately for each subject. Period-based requirements use the reference duration in your input.')
@@ -72,7 +73,7 @@ elective_choices = {}
 options_by_group = base[base['Elective group'] != '']
 if not options_by_group.empty:
     st.write('Choose one elective from each group for this example pathway')
-    st.caption('These choices determine the curriculum totals and weekly layout below. The first option is selected initially. Groups are independent; this does not check subject-combination restrictions.')
+    st.caption('These choices determine the curriculum totals and weekly layout below. The first option is selected initially. CMN elective options are inherited by each stream; choices remain independent per stream. Groups are independent; this does not check subject-combination restrictions.')
     for (level, stream, group), options in options_by_group.groupby(['Level', 'Stream', 'Elective group'], sort=False):
         key = 'elective_' + sha256(repr((level, stream, group, list(options.Subject))).encode()).hexdigest()[:20]
         elective_choices[(level, stream, group)] = st.selectbox(f'{level} / {stream} — {group}', list(options.Subject), key=key)
@@ -97,7 +98,7 @@ except ValueError as error:
     for column in ['Allocated periods', 'Actual minutes', 'Balance minutes', 'Requirement status']:
         displayed[column] = None
 
-input_signature = sha256(s.to_json(orient='split').encode()).hexdigest()[:16]
+input_signature = sha256(base[['Level', 'Stream', 'Subject', 'Required minutes', 'Minimum periods']].to_json(orient='split').encode()).hexdigest()[:16]
 editor_key = f'period_allocation_{length}_{input_signature}_{st.session_state.adjustment_reset}'
 def save_adjustments():
     changes = st.session_state[editor_key].get('edited_rows', {})

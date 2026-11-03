@@ -89,3 +89,13 @@ Each student takes all compulsory subjects and **one subject from each independe
 5. **Minimum pathway hours** and **Maximum pathway hours** show the range across all independent choices, after per-subject rounding and manual adjustments. Curriculum hours/time are for the specific selected pathway. Change a selector to explore another pathway's weekly layout and dismissal.
 
 You can also type group names directly in the app's Subject Requirements editor. When editing Excel, add group names to Lists first and use the dropdown. Old files without Elective group remain entirely compulsory. Each subject can belong to one group at most within a level/stream and appears only once. The model does not support combinations that restrict choices across groups, choosing multiple subjects within a group, elective synchronisation, or class/teacher allocation. A weekly layout for one selected pathway does not represent all students' pathways simultaneously.
+
+## Common requirements: CMN
+
+The template setup defaults to **G3, G2, G1, CMN**. CMN is a shared input label, not a fourth student curriculum. Enter common subjects once with Stream = CMN. At that level their requirements are inherited independently by G3, G2 and G1, even if a target stream has no other subject rows. Common rows are never inherited by other levels or unrelated custom stream names.
+
+Example: Sec 1 / CMN / PE / 90 minutes and Sec 1 / G1 / Mathematics / 150 minutes gives G1 both PE and Mathematics; G2 and G3 each inherit PE. If Sec 1 / G2 / PE / 120 minutes is also entered, G2 uses 120 minutes for PE instead of 90; it does not add both. The specific row replaces the whole common subject row, including unit, reference duration and elective group. Subject names must match exactly for an override. Stream codes G3/G2/G1/CMN are case-insensitive.
+
+Delete unused placeholder rows in the custom template, including blank specific rows for subjects represented by CMN. All retained rows need complete requirements. The **Requirement source** column in the adjustment table shows whether a subject came from CMN or a specific stream. Period adjustments are made separately for each actual stream; to change a common baseline, edit its CMN input row. CMN does not appear as a separate curriculum total or weekly view.
+
+CMN elective groups are inherited too. Students still choose one option per named group, independently for G3, G2 and G1. A stream-specific subject can replace a common option and its group membership. This does not model mixed-level subject placement or synchronised common classes.

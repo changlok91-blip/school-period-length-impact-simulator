@@ -162,6 +162,40 @@ def with_stream(subjects):
     return subjects.loc[:, columns]
 
 
+COMMON_TARGETS = ['G3', 'G2', 'G1']
+
+
+def expand_common_requirements(subjects):
+    """CMN is inherited by G3/G2/G1 at the same level, with specific overrides."""
+    subjects = with_stream(subjects)
+    for column in ['Level', 'Subject']:
+        if column not in subjects:
+            raise ValueError(f'Subject Requirements: missing columns {column}')
+        if subjects[column].isna().any() or any(not str(v).strip() for v in subjects[column]):
+            raise ValueError(f'{column} must be filled for every subject row.')
+    subjects['Stream'] = subjects.Stream.map(lambda v: v.upper() if v.upper() in COMMON_TARGETS + ['CMN'] else v)
+    if subjects.duplicated(['Level', 'Stream', 'Subject']).any():
+        raise ValueError('Duplicate subject rows are not allowed within the same level and stream.')
+    if subjects.empty:
+        return subjects
+    expanded = []
+    for level, group in subjects.groupby('Level', sort=False):
+        common = group[group.Stream == 'CMN']
+        specific = group[group.Stream != 'CMN']
+        streams = list(dict.fromkeys((COMMON_TARGETS if not common.empty else []) + list(specific.Stream)))
+        for stream in streams:
+            own = specific[specific.Stream == stream].copy()
+            inherited = common[~common.Subject.isin(own.Subject)].copy() if stream in COMMON_TARGETS else common.iloc[:0].copy()
+            inherited['Stream'] = stream
+            inherited['Requirement source'] = 'CMN'
+            own['Requirement source'] = stream
+            inherited.attrs = {}; own.attrs = {}
+            expanded.extend([inherited, own])
+    result = pd.concat(expanded, ignore_index=True)
+    result.attrs = subjects.attrs.copy()
+    return result
+
+
 def calculate(subjects, days, activities, overrides=None):
     subjects = with_stream(subjects)
     # Validate all levels/settings together, then reuse the single-level engine per stream.
@@ -195,7 +229,7 @@ def curriculum_allocation(subjects, period_length, adjustments=None, elective_ch
     if duration != int(duration):
         raise ValueError('Minutes per period must be a whole number.')
     duration = int(duration)
-    subjects = with_stream(subjects)
+    subjects = expand_common_requirements(subjects)
     needed = ['Level', 'Stream', 'Subject', SUB[2], 'Unit', SUB[4]]
     if not set(needed) <= set(subjects):
         raise ValueError('Subject Requirements: missing columns ' + ', '.join(c for c in needed if c not in subjects))
@@ -233,7 +267,7 @@ def curriculum_allocation(subjects, period_length, adjustments=None, elective_ch
                      'Adjustment (periods)': adjustment, 'Allocated periods': allocated,
                      'Actual minutes': actual, 'Balance minutes': float(Decimal(actual) - required),
                      'Requirement status': 'Shortfall' if Decimal(actual) < required else 'Met',
-                     'Elective group': r['Elective group']})
+                     'Elective group': r['Elective group'], 'Requirement source': r['Requirement source']})
     detail = pd.DataFrame(rows)
     detail['Selected'] = detail['Elective group'] == ''
     for (level, stream, name), options in detail[detail['Elective group'] != ''].groupby(['Level', 'Stream', 'Elective group'], sort=False):
@@ -457,6 +491,7 @@ ASSUMPTIONS = pd.DataFrame({'Assumption': [
     'Edit Level, Stream and Subject choices on Lists, one value per cell with no blank gaps. Append within rows 2–1001; dropdowns cover Subject Requirements rows 2–5001.',
     'Unit supports only minutes and periods. Weekly requirements must be numeric and non-negative; reference durations must be positive numbers and are required for periods.',
     'Excel validation may be bypassed by paste; uploaded workbooks are validated again. Older workbooks without Lists remain supported.',
+    'CMN requirements apply to G3, G2 and G1 at the same level. A stream-specific row for the same subject replaces the entire CMN row. CMN is not an output stream.',
     'A blank Elective group means compulsory. Choose one subject from each named group independently per level/stream. Curriculum and weekly layout use the selected choices only.',
     'Each level and stream is calculated separately. School day settings and fixed activities are shared by all streams in that level.',
     'Workbooks without Stream are loaded as General; blank stream cells in newer workbooks are invalid.',

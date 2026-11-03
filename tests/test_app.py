@@ -183,3 +183,25 @@ def test_startup_refreshes_pre_elective_helper(monkeypatch):
     app = AppTest.from_file(APP).run(timeout=30)
     assert not app.exception
     assert hasattr(simulator, 'elective_input_version')
+
+
+def test_common_inputs_produce_three_real_stream_outputs(monkeypatch):
+    import simulator
+    import pandas as pd
+    _, days, acts = simulator.sample_data()
+    subjects = pd.DataFrame([
+        ['Sec 1', 'CMN', 'PE', 90, 'minutes', None, ''],
+        ['Sec 1', 'G1', 'Mathematics', 150, 'minutes', None, ''],
+    ], columns=['Level', 'Stream', 'Subject', 'Minimum weekly requirement', 'Unit', 'Reference period duration in minutes', 'Elective group'])
+    monkeypatch.setattr(simulator, 'sample_data', lambda: (subjects, days[days.Level == 'Sec 1'], acts[acts.Level == 'Sec 1']))
+    app = AppTest.from_file(APP).run(timeout=30)
+    assert not app.exception
+    assert set(totals_table(app).Stream) == {'G3', 'G2', 'G1'}
+    assert set(subject_table(app)['Requirement source']) == {'CMN', 'G1'}
+    assert 'CMN' not in app.selectbox(key='week_stream').options
+    pe = subject_table(app)
+    idx = pe[(pe.Stream == 'G1') & (pe.Subject == 'PE')].index[0]
+    edit_adjustment(app, int(idx), 1)
+    totals = totals_table(app).set_index('Stream')
+    assert totals.loc['G1', 'Curriculum minutes'] == 270
+    assert totals.loc['G2', 'Curriculum minutes'] == 90
